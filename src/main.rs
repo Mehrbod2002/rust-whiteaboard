@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use glyphon::{
     Attrs, Buffer, Cache, Family, FontSystem, Metrics, Shaping, SwashCache,
     TextAtlas, TextRenderer, Viewport,
@@ -136,6 +137,7 @@ impl winit::application::ApplicationHandler for Application {
         if let Some(state) = &mut self.window_state {
             match event {
                 WindowEvent::Resized(size) => {
+                    println!("{} {}",size.width,size.height);
                     state.surface_config.width = size.width;
                     state.surface_config.height = size.height;
                     state
