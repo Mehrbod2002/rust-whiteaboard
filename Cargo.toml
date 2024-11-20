@@ -10,3 +10,9 @@ pollster = "0.3"
 bytemuck = { version = "1.19.0", features = ["derive"] }
 glyphon = "0.7.0"
 winit = "0.30.5"
+
+[profile.dev]
+opt-level=0
+
+[profile.release]
+opt-level=0
