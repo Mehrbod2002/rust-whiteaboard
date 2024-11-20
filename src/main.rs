@@ -84,16 +84,18 @@ impl WindowState {
                 button,
             } => {
                 if *button == MouseButton::Left {
-                    self.mouse_pressed = *state == ElementState::Pressed;
-                    if !self.mouse_pressed {
-                        window.request_redraw();
-                        self.mouse_pressed = false;
-                        if !self.current_stroke.is_empty() {
-                            self.strokes.push(self.current_stroke.clone());
+                    if *button == MouseButton::Left {
+                        if *state == ElementState::Pressed {
+                            self.mouse_pressed = true;
+                            self.current_stroke = Vec::new();
+                        } else {
+                            self.mouse_pressed = false;
+                            if !self.current_stroke.is_empty() {
+                                self.strokes.push(self.current_stroke.clone());
+                                self.current_stroke.clear();
+                            }
+                            window.request_redraw();
                         }
-                    } else {
-                        self.mouse_pressed = true;
-                        self.current_stroke = Vec::new();
                     }
                 }
                 true
@@ -269,8 +271,8 @@ impl WindowState {
             if !stroke.is_empty() {
                 all_vertices.extend_from_slice(stroke);
 
-                // Add degenerate vertex to separate strokes
                 let last_vertex = stroke.last().unwrap();
+                all_vertices.push(*last_vertex);
                 all_vertices.push(*last_vertex);
             }
         }
@@ -279,7 +281,6 @@ impl WindowState {
             all_vertices.extend_from_slice(&self.current_stroke);
         }
 
-        // Only create the buffer if there's content
         if !all_vertices.is_empty() {
             let vertex_data = bytemuck::cast_slice(&all_vertices);
             self.vertex_buffer =
@@ -297,13 +298,13 @@ impl WindowState {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-
+    
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
-
+    
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -312,30 +313,27 @@ impl WindowState {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                        store: StoreOp::default(),
+                        store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-
-            // Only set the pipeline and draw if there's a valid buffer
+    
             if self.vertex_buffer.size() > 0 {
                 render_pass.set_pipeline(&self.render_pipeline);
                 render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                render_pass.draw(
-                    0..(self.vertex_buffer.size() as u32 / std::mem::size_of::<Vertex>() as u32),
-                    0..1,
-                );
+                render_pass.draw(0..(self.vertex_buffer.size() as u32 / std::mem::size_of::<Vertex>() as u32), 0..1);
             }
         }
-
+    
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
-
+    
         Ok(())
     }
+    
 }
 
 struct Application {
