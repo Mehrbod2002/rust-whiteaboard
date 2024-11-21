@@ -1,7 +1,8 @@
 #![allow(dead_code, unused_imports)]
 use glyphon::{
-    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
-    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
+    cosmic_text::LineEnding, Attrs, AttrsList, Buffer, BufferLine, Cache, Color, Family,
+    FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds,
+    TextRenderer, Viewport,
 };
 use std::sync::Arc;
 use wgpu::{
@@ -13,11 +14,11 @@ use wgpu::{
 };
 use winit::{
     application::ApplicationHandler,
-    dpi::{LogicalSize, PhysicalSize},
+    dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{ElementState, MouseButton, WindowEvent},
     event_loop::EventLoop,
-    keyboard::{KeyCode, KeyLocation, PhysicalKey},
-    window::Window,
+    keyboard::{Key, KeyCode, KeyLocation, NamedKey, PhysicalKey},
+    window::{CursorGrabMode, Window},
 };
 
 fn main() {
@@ -36,17 +37,11 @@ struct Vertex {
 
 struct WindowState {
     device: wgpu::Device,
+    swash_cache: SwashCache,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     surface_config: SurfaceConfiguration,
     size: PhysicalSize<u32>,
-
-    font_system: FontSystem,
-    swash_cache: SwashCache,
-    viewport: glyphon::Viewport,
-    atlas: glyphon::TextAtlas,
-    text_renderer: glyphon::TextRenderer,
-    text_buffer: glyphon::Buffer,
 
     window: Arc<Window>,
 
@@ -57,18 +52,51 @@ struct WindowState {
 
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    stroke_vertex_ranges: Vec<std::ops::Range<u32>>,
+
+    text_input_mode: bool,
+    text_position: Option<[f32; 2]>,
+    current_text: String,
+    text_entries: Vec<(String, [f32; 2])>,
+    atlas: glyphon::TextAtlas,
+    viewport: glyphon::Viewport,
+    font_system: FontSystem,
+    text_renderer: TextRenderer,
+    text_buffer: Buffer,
+
+    cursor_position: Option<PhysicalPosition<f64>>,
 }
 
 impl WindowState {
     fn input(&mut self, window: Arc<Window>, event: &WindowEvent) -> bool {
         match event {
-            WindowEvent::CursorMoved {
-                device_id: _,
-                position,
-            } => {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_position = Some(*position);
                 if self.mouse_pressed {
                     let x = position.x as f32 / self.size.width as f32 * 2.0 - 1.0;
                     let y = -(position.y as f32 / self.size.height as f32 * 2.0 - 1.0);
+
+                    // Add interpolated points for smoothness
+                    if let Some(last_vertex) = self.current_stroke.clone().last() {
+                        let dx = x - last_vertex.position[0];
+                        let dy = y - last_vertex.position[1];
+                        let distance_squared = dx * dx + dy * dy;
+
+                        if distance_squared > 0.01 {
+                            let steps = (distance_squared.sqrt() * 10.0).ceil() as usize;
+                            for i in 1..steps {
+                                let t = i as f32 / steps as f32;
+                                self.current_stroke.push(Vertex {
+                                    position: [
+                                        last_vertex.position[0] + dx * t,
+                                        last_vertex.position[1] + dy * t,
+                                    ],
+                                    color: self.current_color,
+                                });
+                            }
+                        }
+                    }
+
                     self.current_stroke.push(Vertex {
                         position: [x, y],
                         color: self.current_color,
@@ -78,45 +106,70 @@ impl WindowState {
                 }
                 true
             }
-            WindowEvent::MouseInput {
-                device_id: _,
-                state,
-                button,
-            } => {
+            WindowEvent::MouseInput { state, button, .. } => {
                 if *button == MouseButton::Left {
-                    if *button == MouseButton::Left {
-                        if *state == ElementState::Pressed {
-                            self.mouse_pressed = true;
-                            self.current_stroke = Vec::new();
-                        } else {
-                            self.mouse_pressed = false;
-                            if !self.current_stroke.is_empty() {
-                                self.strokes.push(self.current_stroke.clone());
-                                self.current_stroke.clear();
-                            }
-                            window.request_redraw();
+                    if *state == ElementState::Pressed {
+                        self.mouse_pressed = true;
+                        self.current_stroke.clear();
+                    } else {
+                        self.mouse_pressed = false;
+                        if !self.current_stroke.is_empty() {
+                            self.strokes.push(self.current_stroke.clone());
+                            self.current_stroke.clear();
+                        }
+                        window.request_redraw();
+                    }
+                } else if *button == MouseButton::Right {
+                    if *state == ElementState::Pressed {
+                        if let Some(position) = self.cursor_position {
+                            let x = position.x as f32 / self.size.width as f32 * 2.0 - 1.0;
+                            let y = -(position.y as f32 / self.size.height as f32 * 2.0 - 1.0);
+
+                            self.text_input_mode = true;
+                            self.text_position = Some([x, y]);
+                            self.current_text.clear();
                         }
                     }
                 }
                 true
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(ref text) = event.text {
-                    match event.location {
-                        KeyLocation::Numpad => {
-                            match text.as_str() {
-                                "1" => self.current_color = [1.0, 0.0, 0.0, 1.0], // Red
-                                "2" => self.current_color = [0.0, 1.0, 0.0, 1.0], // Green
-                                "3" => self.current_color = [0.0, 0.0, 1.0, 1.0], // Blue
-                                "4" => self.current_color = [1.0, 1.0, 0.0, 1.0], // Yellow
-                                "5" => self.current_color = [1.0, 0.0, 1.0, 1.0], // Magenta
-                                "6" => self.current_color = [0.0, 1.0, 1.0, 1.0], // Cyan
-                                "7" => self.current_color = [0.0, 0.0, 0.0, 1.0], // Black
-                                "8" => self.current_color = [1.0, 1.0, 1.0, 1.0], // White
-                                _ => {}
+                if self.text_input_mode {
+                    match event.logical_key {
+                        Key::Named(NamedKey::Enter) => {
+                            if let Some(position) = self.text_position {
+                                self.text_entries
+                                    .push((self.current_text.clone(), position));
+                            }
+                            self.text_input_mode = false;
+                            self.text_position = None;
+                            self.current_text.clear();
+                            window.request_redraw();
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            self.current_text.pop();
+                            window.request_redraw();
+                        }
+                        _ => {
+                            if let Some(ref text) = event.text {
+                                self.current_text.push_str(text);
+                                window.request_redraw();
                             }
                         }
-                        _ => (),
+                    }
+                } else {
+                    if let Some(ref text) = event.text {
+                        match text.as_str() {
+                            "1" => self.current_color = [1.0, 0.0, 0.0, 1.0], // Red
+                            "2" => self.current_color = [0.0, 1.0, 0.0, 1.0], // Green
+                            "3" => self.current_color = [0.0, 0.0, 1.0, 1.0], // Blue
+                            "4" => self.current_color = [1.0, 1.0, 0.0, 1.0], // Yellow
+                            "5" => self.current_color = [1.0, 0.0, 1.0, 1.0], // Magenta
+                            "6" => self.current_color = [0.0, 1.0, 1.0, 1.0], // Cyan
+                            "7" => self.current_color = [0.0, 0.0, 0.0, 1.0], // Black
+                            "8" => self.current_color = [1.0, 1.0, 1.0, 1.0], // White
+                            _ => {}
+                        }
                     }
                 }
                 true
@@ -127,7 +180,6 @@ impl WindowState {
 
     async fn new(window: Arc<Window>) -> Self {
         let physical_size = window.inner_size();
-        let scale_factor = window.scale_factor();
 
         let instance = Instance::new(InstanceDescriptor::default());
         let surface = instance
@@ -159,26 +211,6 @@ impl WindowState {
         };
         surface.configure(&device, &surface_config);
 
-        let mut font_system = FontSystem::new();
-        let swash_cache = SwashCache::new();
-        let cache = Cache::new(&device);
-        let viewport = Viewport::new(&device, &cache);
-        let mut atlas = TextAtlas::new(&device, &queue, &cache, swapchain_format);
-        let text_renderer =
-            TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
-        let mut text_buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
-
-        let physical_width = (physical_size.width as f64 * scale_factor) as f32;
-        let physical_height = (physical_size.height as f64 * scale_factor) as f32;
-
-        text_buffer.set_size(
-            &mut font_system,
-            Some(physical_width),
-            Some(physical_height),
-        );
-        text_buffer.set_text(&mut font_system, "Hello world! 👋\nThis is rendered with 🦅 glyphon 🦁\nThe text below should be partially clipped.\na b c d e f g h i j k l m n o p q r s t u v w x y z", Attrs::new().family(Family::SansSerif), Shaping::Advanced);
-        text_buffer.shape_until_scroll(&mut font_system, false);
-
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -197,7 +229,7 @@ impl WindowState {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &vertex_attr_array![
                         0 => Float32x2,
@@ -233,18 +265,24 @@ impl WindowState {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
+        let mut font_system = FontSystem::new();
+        let cache = Cache::new(&device);
+        let viewport = Viewport::new(&device, &cache);
+        let mut atlas = TextAtlas::new(&device, &queue, &cache, swapchain_format);
+        let text_renderer =
+            TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
+        let text_buffer = Buffer::new(&mut font_system, Metrics::new(24.0, 14.0));
+        let swash_cache = SwashCache::new();
+
         Self {
             device,
             queue,
             surface,
-            surface_config,
-            font_system,
             swash_cache,
-            viewport,
-            atlas,
-            text_renderer,
-            text_buffer,
+            surface_config,
             window,
+            cursor_position: None,
+            viewport,
             size: physical_size,
             mouse_pressed: false,
             render_pipeline,
@@ -252,6 +290,15 @@ impl WindowState {
             strokes: Vec::new(),
             current_stroke: Vec::new(),
             current_color: [0.0, 0.0, 0.0, 1.0],
+            stroke_vertex_ranges: Vec::new(),
+            text_input_mode: false,
+            text_position: None,
+            current_text: String::new(),
+            text_entries: Vec::new(),
+            font_system,
+            text_renderer,
+            text_buffer,
+            atlas,
         }
     }
 
@@ -266,19 +313,25 @@ impl WindowState {
 
     fn update(&mut self) {
         let mut all_vertices = Vec::new();
+        self.stroke_vertex_ranges.clear();
+        let mut vertex_count = 0u32;
 
         for stroke in &self.strokes {
             if !stroke.is_empty() {
+                let start = vertex_count;
                 all_vertices.extend_from_slice(stroke);
-
-                let last_vertex = stroke.last().unwrap();
-                all_vertices.push(*last_vertex);
-                all_vertices.push(*last_vertex);
+                vertex_count += stroke.len() as u32;
+                let end = vertex_count;
+                self.stroke_vertex_ranges.push(start..end);
             }
         }
 
         if !self.current_stroke.is_empty() {
+            let start = vertex_count;
             all_vertices.extend_from_slice(&self.current_stroke);
+            vertex_count += self.current_stroke.len() as u32;
+            let end = vertex_count;
+            self.stroke_vertex_ranges.push(start..end);
         }
 
         if !all_vertices.is_empty() {
@@ -291,6 +344,43 @@ impl WindowState {
                         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     });
         }
+
+        // Manage text entries using buffer.lines
+        self.text_buffer.lines.clear();
+
+        for (text, position) in &self.text_entries {
+            let attrs = Attrs::new();
+            let color = Color::rgb(0, 0, 0);
+
+            let x = (position[0] + 1.0) / 2.0 * self.size.width as f32;
+            let y = (-position[1] + 1.0) / 2.0 * self.size.height as f32;
+
+            let line = BufferLine::new(
+                text,
+                LineEnding::default(),
+                AttrsList::new(attrs.color(color)),
+                Shaping::Advanced,
+            );
+            self.text_buffer.lines.push(line);
+        }
+
+        if self.text_input_mode {
+            if let Some(position) = self.text_position {
+                let attrs = Attrs::new();
+                let color = Color::rgb(0, 0, 0);
+
+                let x = (position[0] + 1.0) / 2.0 * self.size.width as f32;
+                let y = (-position[1] + 1.0) / 2.0 * self.size.height as f32;
+
+                let line = BufferLine::new(
+                    &self.current_text,
+                    LineEnding::default(),
+                    AttrsList::new(attrs.color(color)),
+                    Shaping::Advanced,
+                );
+                self.text_buffer.lines.push(line);
+            }
+        }
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -298,13 +388,13 @@ impl WindowState {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-    
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
-    
+
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -320,20 +410,49 @@ impl WindowState {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-    
-            if self.vertex_buffer.size() > 0 {
+
+            if !self.stroke_vertex_ranges.is_empty() {
                 render_pass.set_pipeline(&self.render_pipeline);
                 render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                render_pass.draw(0..(self.vertex_buffer.size() as u32 / std::mem::size_of::<Vertex>() as u32), 0..1);
+                for range in &self.stroke_vertex_ranges {
+                    render_pass.draw(range.clone(), 0..1);
+                }
             }
         }
-    
-        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let mut staging_belt = wgpu::util::StagingBelt::new(1024);
+
+        self.text_renderer
+            .prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.atlas,
+                &self.viewport,
+                [TextArea {
+                    buffer: &self.text_buffer,
+                    left: 10.0,
+                    top: 10.0,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: 600,
+                        bottom: 160,
+                    },
+                    default_color: Color::rgb(255, 255, 255),
+                    custom_glyphs: &[],
+                }],
+                &mut self.swash_cache,
+            )
+            .unwrap();
+
+        staging_belt.finish();
+        self.queue.submit(Some(encoder.finish()));
         output.present();
-    
+
         Ok(())
     }
-    
 }
 
 struct Application {
@@ -361,29 +480,26 @@ impl ApplicationHandler for Application {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        let Some(state) = &mut self.window_state else {
-            return;
-        };
-
-        let window = &state.window;
-        if !state.input(window.clone(), &event) {
-            match event {
-                WindowEvent::CloseRequested => event_loop.exit(),
-                WindowEvent::Resized(size) => state.resize(size),
-                _ => {}
-            }
-        }
-        match event {
-            WindowEvent::RedrawRequested => {
-                state.update();
-                match state.render() {
-                    Ok(_) => {}
-                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                    Err(e) => eprintln!("{:?}", e),
+        if let Some(state) = &mut self.window_state {
+            let window = &state.window;
+            if !state.input(window.clone(), &event) {
+                match event {
+                    WindowEvent::CloseRequested => event_loop.exit(),
+                    WindowEvent::Resized(size) => state.resize(size),
+                    _ => {}
                 }
             }
-            _ => {}
+
+            if let WindowEvent::RedrawRequested = event {
+                state.update();
+                if let Err(e) = state.render() {
+                    match e {
+                        wgpu::SurfaceError::Lost => state.resize(state.size),
+                        wgpu::SurfaceError::OutOfMemory => event_loop.exit(),
+                        _ => eprintln!("{:?}", e),
+                    }
+                }
+            }
         }
     }
 }
