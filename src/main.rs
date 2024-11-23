@@ -4,7 +4,10 @@ use glyphon::{
     FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds,
     TextRenderer, Viewport,
 };
-use std::sync::Arc;
+use std::{
+    fmt::{self, Error},
+    sync::Arc,
+};
 use wgpu::{
     util::DeviceExt, vertex_attr_array, CommandEncoderDescriptor, CompositeAlphaMode,
     DeviceDescriptor, Instance, InstanceDescriptor, LoadOp, MultisampleState, Operations,
@@ -42,7 +45,7 @@ struct WindowState {
     surface: wgpu::Surface<'static>,
     surface_config: SurfaceConfiguration,
     size: PhysicalSize<u32>,
-
+    scale_factor: f64,
     window: Arc<Window>,
 
     mouse_pressed: bool,
@@ -62,7 +65,6 @@ struct WindowState {
     viewport: glyphon::Viewport,
     font_system: FontSystem,
     text_renderer: TextRenderer,
-    text_buffer: Buffer,
 
     cursor_position: Option<PhysicalPosition<f64>>,
 }
@@ -76,7 +78,6 @@ impl WindowState {
                     let x = position.x as f32 / self.size.width as f32 * 2.0 - 1.0;
                     let y = -(position.y as f32 / self.size.height as f32 * 2.0 - 1.0);
 
-                    // Add interpolated points for smoothness
                     if let Some(last_vertex) = self.current_stroke.clone().last() {
                         let dx = x - last_vertex.position[0];
                         let dy = y - last_vertex.position[1];
@@ -107,24 +108,28 @@ impl WindowState {
                 true
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if *button == MouseButton::Left {
-                    if *state == ElementState::Pressed {
-                        self.mouse_pressed = true;
-                        self.current_stroke.clear();
-                    } else {
-                        self.mouse_pressed = false;
-                        if !self.current_stroke.is_empty() {
-                            self.strokes.push(self.current_stroke.clone());
-                            self.current_stroke.clear();
-                        }
-                        window.request_redraw();
-                    }
-                } else if *button == MouseButton::Right {
-                    if *state == ElementState::Pressed {
-                        if let Some(position) = self.cursor_position {
-                            let x = position.x as f32 / self.size.width as f32 * 2.0 - 1.0;
-                            let y = -(position.y as f32 / self.size.height as f32 * 2.0 - 1.0);
+                if *button == MouseButton::Right && *state == ElementState::Pressed {
+                    if let Some(position) = self.cursor_position {
+                        let x = position.x as f32 / self.size.width as f32 * 2.0 - 1.0;
+                        let y = -(position.y as f32 / self.size.height as f32 * 2.0 - 1.0);
 
+                        let mut found_entry = None;
+                        for (i, (_, entry_pos)) in self.text_entries.iter().enumerate() {
+                            let dx = x - entry_pos[0];
+                            let dy = y - entry_pos[1];
+                            let distance_squared = dx * dx + dy * dy;
+
+                            if distance_squared < 0.01 {
+                                found_entry = Some(i);
+                                break;
+                            }
+                        }
+
+                        if let Some(index) = found_entry {
+                            self.text_input_mode = true;
+                            self.text_position = Some(self.text_entries[index].1);
+                            self.current_text = self.text_entries[index].0.clone();
+                        } else {
                             self.text_input_mode = true;
                             self.text_position = Some([x, y]);
                             self.current_text.clear();
@@ -134,13 +139,28 @@ impl WindowState {
                 true
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if self.text_input_mode {
+                if self.text_input_mode && event.state == ElementState::Pressed {
                     match event.logical_key {
                         Key::Named(NamedKey::Enter) => {
                             if let Some(position) = self.text_position {
-                                self.text_entries
-                                    .push((self.current_text.clone(), position));
+                                // Save the current text at the selected position
+                                let mut found_entry = false;
+
+                                for (entry_text, entry_pos) in &mut self.text_entries {
+                                    if *entry_pos == position {
+                                        *entry_text = self.current_text.clone();
+                                        found_entry = true;
+                                        break;
+                                    }
+                                }
+
+                                if !found_entry {
+                                    // Add a new text entry if it doesn't exist
+                                    self.text_entries
+                                        .push((self.current_text.clone(), position));
+                                }
                             }
+
                             self.text_input_mode = false;
                             self.text_position = None;
                             self.current_text.clear();
@@ -157,20 +177,6 @@ impl WindowState {
                             }
                         }
                     }
-                } else {
-                    if let Some(ref text) = event.text {
-                        match text.as_str() {
-                            "1" => self.current_color = [1.0, 0.0, 0.0, 1.0], // Red
-                            "2" => self.current_color = [0.0, 1.0, 0.0, 1.0], // Green
-                            "3" => self.current_color = [0.0, 0.0, 1.0, 1.0], // Blue
-                            "4" => self.current_color = [1.0, 1.0, 0.0, 1.0], // Yellow
-                            "5" => self.current_color = [1.0, 0.0, 1.0, 1.0], // Magenta
-                            "6" => self.current_color = [0.0, 1.0, 1.0, 1.0], // Cyan
-                            "7" => self.current_color = [0.0, 0.0, 0.0, 1.0], // Black
-                            "8" => self.current_color = [1.0, 1.0, 1.0, 1.0], // White
-                            _ => {}
-                        }
-                    }
                 }
                 true
             }
@@ -180,7 +186,7 @@ impl WindowState {
 
     async fn new(window: Arc<Window>) -> Self {
         let physical_size = window.inner_size();
-
+        let scale_factor = window.scale_factor();
         let instance = Instance::new(InstanceDescriptor::default());
         let surface = instance
             .create_surface(window.clone())
@@ -271,7 +277,6 @@ impl WindowState {
         let mut atlas = TextAtlas::new(&device, &queue, &cache, swapchain_format);
         let text_renderer =
             TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
-        let text_buffer = Buffer::new(&mut font_system, Metrics::new(24.0, 14.0));
         let swash_cache = SwashCache::new();
 
         Self {
@@ -280,6 +285,7 @@ impl WindowState {
             surface,
             swash_cache,
             surface_config,
+            scale_factor,
             window,
             cursor_position: None,
             viewport,
@@ -297,7 +303,6 @@ impl WindowState {
             text_entries: Vec::new(),
             font_system,
             text_renderer,
-            text_buffer,
             atlas,
         }
     }
@@ -311,7 +316,7 @@ impl WindowState {
         }
     }
 
-    fn update(&mut self) {
+    fn update(&mut self) -> Result<(), wgpu::SurfaceError> {
         let mut all_vertices = Vec::new();
         self.stroke_vertex_ranges.clear();
         let mut vertex_count = 0u32;
@@ -345,42 +350,72 @@ impl WindowState {
                     });
         }
 
-        // Manage text entries using buffer.lines
-        self.text_buffer.lines.clear();
+        let mut text_areas: Vec<TextArea> = Vec::new();
 
-        for (text, position) in &self.text_entries {
-            let attrs = Attrs::new();
-            let color = Color::rgb(0, 0, 0);
+        if self.text_input_mode && self.text_position.is_some() {
+            if let Some(position) = self.text_position {
+                self.text_entries
+                    .push((self.current_text.clone(), position));
+            }
+        }
 
+        let mut full_text = String::new();
+        for (text, _) in &self.text_entries {
+            full_text.push_str(text);
+            full_text.push('\n');
+        }
+
+        let attrs = Attrs::new().color(Color::rgb(0, 0, 0));
+
+        let mut text_buffer = Buffer::new(&mut self.font_system, Metrics::new(24.0, 14.0));
+        let physical_width = (self.size.width as f64 * self.scale_factor) as f32;
+        let physical_height = (self.size.height as f64 * self.scale_factor) as f32;
+
+        text_buffer
+            .set_text(&mut self.font_system, &full_text, attrs, Shaping::Advanced);
+
+            text_buffer.set_size(
+                &mut self.font_system,
+                Some(physical_width),
+                Some(physical_height),
+            );
+            text_buffer.shape_until_scroll(&mut self.font_system, false);
+
+        for (_, position) in &self.text_entries {
             let x = (position[0] + 1.0) / 2.0 * self.size.width as f32;
             let y = (-position[1] + 1.0) / 2.0 * self.size.height as f32;
 
-            let line = BufferLine::new(
-                text,
-                LineEnding::default(),
-                AttrsList::new(attrs.color(color)),
-                Shaping::Advanced,
-            );
-            self.text_buffer.lines.push(line);
+            let text_area = TextArea {
+                buffer: &text_buffer,
+                left: x,
+                top: y,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: self.size.width as i32,
+                    bottom: self.size.height as i32,
+                },
+                default_color: Color::rgb(0, 0, 0),
+                custom_glyphs: &[],
+            };
+
+            text_areas.push(text_area);
         }
 
-        if self.text_input_mode {
-            if let Some(position) = self.text_position {
-                let attrs = Attrs::new();
-                let color = Color::rgb(0, 0, 0);
-
-                let x = (position[0] + 1.0) / 2.0 * self.size.width as f32;
-                let y = (-position[1] + 1.0) / 2.0 * self.size.height as f32;
-
-                let line = BufferLine::new(
-                    &self.current_text,
-                    LineEnding::default(),
-                    AttrsList::new(attrs.color(color)),
-                    Shaping::Advanced,
-                );
-                self.text_buffer.lines.push(line);
-            }
+        if let Err(e) = self.text_renderer.prepare(
+            &self.device,
+            &self.queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            text_areas,
+            &mut self.swash_cache,
+        ) {
+            eprintln!("Glyphon prepare error: {:?}", e);
         }
+
+        Ok(())
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -418,36 +453,15 @@ impl WindowState {
                     render_pass.draw(range.clone(), 0..1);
                 }
             }
+
+            if let Err(e) = self
+                .text_renderer
+                .render(&self.atlas, &self.viewport, &mut render_pass)
+            {
+                eprintln!("Glyphon render error: {:?}", e);
+            }
         }
 
-        let mut staging_belt = wgpu::util::StagingBelt::new(1024);
-
-        self.text_renderer
-            .prepare(
-                &self.device,
-                &self.queue,
-                &mut self.font_system,
-                &mut self.atlas,
-                &self.viewport,
-                [TextArea {
-                    buffer: &self.text_buffer,
-                    left: 10.0,
-                    top: 10.0,
-                    scale: 1.0,
-                    bounds: TextBounds {
-                        left: 0,
-                        top: 0,
-                        right: 600,
-                        bottom: 160,
-                    },
-                    default_color: Color::rgb(255, 255, 255),
-                    custom_glyphs: &[],
-                }],
-                &mut self.swash_cache,
-            )
-            .unwrap();
-
-        staging_belt.finish();
         self.queue.submit(Some(encoder.finish()));
         output.present();
 
@@ -491,7 +505,14 @@ impl ApplicationHandler for Application {
             }
 
             if let WindowEvent::RedrawRequested = event {
-                state.update();
+                state.viewport.update(
+                    &state.queue,
+                    Resolution {
+                        width: state.surface_config.width,
+                        height: state.surface_config.height,
+                    },
+                );
+                let _ = state.update();
                 if let Err(e) = state.render() {
                     match e {
                         wgpu::SurfaceError::Lost => state.resize(state.size),
