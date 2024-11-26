@@ -8,6 +8,7 @@ use std::{
     collections::HashSet,
     fmt::{self, Error},
     sync::Arc,
+    time::Instant,
 };
 use wgpu::{
     util::DeviceExt, vertex_attr_array, CommandEncoderDescriptor, CompositeAlphaMode,
@@ -20,7 +21,7 @@ use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{ElementState, MouseButton, WindowEvent},
-    event_loop::{self, EventLoop},
+    event_loop::{self, ControlFlow, EventLoop},
     keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey},
     window::Window,
 };
@@ -50,10 +51,10 @@ struct TextEntries {
 impl TextEntries {
     fn null() -> Self {
         TextEntries {
-            position: [0.0, 0.0], 
-            color: [0, 0, 0, 0],  
-            text: String::new(),  
-            pending: true,        
+            position: [0.0, 0.0],
+            color: [0, 0, 0, 0],
+            text: String::new(),
+            pending: true,
         }
     }
 }
@@ -94,6 +95,9 @@ struct WindowState {
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     start_typing: bool,
+
+    cursor_visible: bool,
+    cursor_timer: Instant,
 }
 
 impl WindowState {
@@ -192,12 +196,12 @@ impl WindowState {
                                         if let Some(text) = self.texts.last_mut() {
                                             if text.pending {
                                                 if text.text.chars().count() > 1 {
-                                                text.text = text
-                                                    .text
-                                                    .chars()
-                                                    .take(text.text.chars().count() - 2)
-                                                    .collect();
-                                                window.request_redraw();
+                                                    text.text = text
+                                                        .text
+                                                        .chars()
+                                                        .take(text.text.chars().count() - 2)
+                                                        .collect();
+                                                    window.request_redraw();
                                                 }
                                             }
                                         }
@@ -382,6 +386,8 @@ impl WindowState {
             current_color: [0.0, 0.0, 0.0, 1.0],
             start_typing: false,
             texts: Vec::new(),
+            cursor_visible: false,
+            cursor_timer: Instant::now(),
         }
     }
 
@@ -397,7 +403,17 @@ impl WindowState {
     fn update(&mut self) -> Result<(), wgpu::SurfaceError> {
         let mut buffers: Vec<glyphon::Buffer> = Vec::new();
 
-        // First, collect all the buffers
+        const CURSOR_BLINK_INTERVAL: f32 = 0.5;
+
+        if self.start_typing {
+            let elapsed = self.cursor_timer.elapsed().as_secs_f32();
+            if elapsed >= CURSOR_BLINK_INTERVAL {
+                self.cursor_visible = !self.cursor_visible;
+                self.cursor_timer = Instant::now();
+                self.window.request_redraw();
+            }
+        }
+
         for i in &self.texts {
             let mut buffer = self.text_buffer.clone();
             buffer.set_text(
@@ -407,10 +423,9 @@ impl WindowState {
                 Shaping::Advanced,
             );
 
-            buffers.push(buffer); // Mutably borrow `buffers` here
+            buffers.push(buffer);
         }
 
-        // Now, create the text_areas
         let mut text_areas: Vec<TextArea> = Vec::new();
 
         for (i, buffer) in self.texts.iter().zip(buffers.iter()) {
@@ -423,9 +438,8 @@ impl WindowState {
 
             let default_color = Color::rgb(i.color[0], i.color[1], i.color[2]);
 
-            // Now `buffers` is only borrowed immutably
             text_areas.push(TextArea {
-                buffer: buffer, // Use immutable reference to buffer
+                buffer: buffer,
                 left: 0.0,
                 top: 0.0,
                 scale: 1.0,
@@ -435,7 +449,6 @@ impl WindowState {
             });
         }
 
-        // Proceed to use `text_areas` without borrow conflicts
         let _ = self.text_renderer.prepare(
             &self.device,
             &self.queue,
@@ -478,12 +491,18 @@ impl WindowState {
 
         for text_entry in &self.texts {
             let mut buffer = self.text_buffer.clone();
+            let mut text = text_entry.text.clone();
+            if text_entry.pending && self.start_typing && self.cursor_visible {
+                text.push('|');
+            }
+
             buffer.set_text(
                 &mut self.font_system,
-                &text_entry.text,
+                &text,
                 Attrs::new().family(Family::SansSerif),
                 Shaping::Advanced,
             );
+
             buffers.push(buffer);
         }
 
@@ -603,6 +622,22 @@ struct Application {
 }
 
 impl ApplicationHandler for Application {
+    fn about_to_wait(&mut self, _: &event_loop::ActiveEventLoop) {
+        let Some(state) = &mut self.window_state else {
+            return;
+        };
+
+        const CURSOR_BLINK_INTERVAL: f32 = 0.5;
+
+        if state.start_typing {
+            if state.cursor_timer.elapsed().as_secs_f32() >= CURSOR_BLINK_INTERVAL {
+                state.cursor_visible = !state.cursor_visible;
+                state.cursor_timer = Instant::now();
+                state.window.request_redraw();
+            }
+        }
+    }
+
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if self.window_state.is_some() {
             return;
@@ -623,6 +658,7 @@ impl ApplicationHandler for Application {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
+        event_loop.set_control_flow(ControlFlow::Poll);
         let Some(state) = &mut self.window_state else {
             return;
         };
@@ -652,7 +688,22 @@ impl ApplicationHandler for Application {
                     Err(e) => eprintln!("{:?}", e),
                 }
             }
-            _ => {}
+            WindowEvent::Focused(_) => {
+                let Some(state) = &mut self.window_state else {
+                    return;
+                };
+
+                const CURSOR_BLINK_INTERVAL: f32 = 0.5;
+
+                if state.start_typing {
+                    if state.cursor_timer.elapsed().as_secs_f32() >= CURSOR_BLINK_INTERVAL {
+                        state.cursor_visible = !state.cursor_visible;
+                        state.cursor_timer = Instant::now();
+                        state.window.request_redraw();
+                    }
+                }
+            }
+            _ => (),
         }
     }
 }
