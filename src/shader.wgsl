@@ -1,4 +1,5 @@
-// Vertex Input Structure
+// shader.wgsl
+
 struct VertexInput {
     @location(0) position: vec2<f32>, // 2D position
     @location(1) color: vec4<f32>,    // RGBA color
