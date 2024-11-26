@@ -8,7 +8,7 @@ use std::{
     collections::HashSet,
     fmt::{self, Error},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use wgpu::{
     util::DeviceExt, vertex_attr_array, CommandEncoderDescriptor, CompositeAlphaMode,
@@ -41,11 +41,20 @@ struct Vertex {
 }
 
 #[derive(Debug, Clone)]
+struct Rect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+#[derive(Debug, Clone)]
 struct TextEntries {
     position: [f32; 2],
     color: [u8; 4],
     text: String,
     pending: bool,
+    bounds: Rect,
 }
 
 impl TextEntries {
@@ -55,6 +64,12 @@ impl TextEntries {
             color: [0, 0, 0, 0],
             text: String::new(),
             pending: true,
+            bounds: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
         }
     }
 }
@@ -98,6 +113,10 @@ struct WindowState {
 
     cursor_visible: bool,
     cursor_timer: Instant,
+    last_click_time: Option<Instant>,
+    last_click_position: Option<PhysicalPosition<f64>>,
+    editing_text_index: Option<usize>,
+    selection_vertex_buffer: Option<wgpu::Buffer>,
 }
 
 impl WindowState {
@@ -127,6 +146,58 @@ impl WindowState {
             } => {
                 if *button == MouseButton::Right {
                     if *state == ElementState::Pressed {
+                        let now = Instant::now();
+                        let position = self.last_cursor_position;
+
+                        let mut double_click_detected = false;
+
+                        if let Some(last_click_time) = self.last_click_time {
+                            if now.duration_since(last_click_time) <= DOUBLE_CLICK_THRESHOLD {
+                                if let Some(last_click_position) = self.last_click_position {
+                                    let dx = position.x - last_click_position.x;
+                                    let dy = position.y - last_click_position.y;
+                                    let distance_squared = dx * dx + dy * dy;
+                                    if distance_squared
+                                        <= DOUBLE_CLICK_DISTANCE * DOUBLE_CLICK_DISTANCE
+                                    {
+                                        double_click_detected = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        if double_click_detected {
+                            let mut text_found = false;
+                            for (i, text_entry) in self.texts.iter().enumerate() {
+                                let bounds = &text_entry.bounds;
+                                if position.x >= bounds.x as f64
+                                    && position.x <= (bounds.x + bounds.width) as f64
+                                    && position.y >= bounds.y as f64
+                                    && position.y <= (bounds.y + bounds.height) as f64
+                                {
+                                    self.editing_text_index = Some(i);
+                                    self.start_typing = true;
+                                    window.request_redraw();
+                                    text_found = true;
+                                    break;
+                                }
+                            }
+                            if !text_found {
+                                let mut new_text_entry = TextEntries::null();
+                                let x = position.x as f32;
+                                let y = position.y as f32;
+                                new_text_entry.position = [x, y];
+                                new_text_entry.color = [0, 0, 0, 255];
+                                self.texts.push(new_text_entry);
+                                self.editing_text_index = Some(self.texts.len() - 1);
+                                self.start_typing = true;
+                                window.request_redraw();
+                            }
+                        }
+
+                        self.last_click_time = Some(now);
+                        self.last_click_position = Some(position);
+
                         if self.start_typing {
                             self.start_typing = false;
                             if let Some(text) = self.texts.last_mut() {
@@ -388,6 +459,10 @@ impl WindowState {
             texts: Vec::new(),
             cursor_visible: false,
             cursor_timer: Instant::now(),
+            last_click_time: None,
+            last_click_position: None,
+            editing_text_index: None,
+            selection_vertex_buffer: None,
         }
     }
 
@@ -423,25 +498,66 @@ impl WindowState {
                 Shaping::Advanced,
             );
 
+            buffer.shape_until_scroll(&mut self.font_system, false);
             buffers.push(buffer);
         }
 
         let mut text_areas: Vec<TextArea> = Vec::new();
 
-        for (i, buffer) in self.texts.iter().zip(buffers.iter()) {
+        for (index, (text_entry, buffer)) in self.texts.iter_mut().zip(buffers.iter()).enumerate() {
+            let x = text_entry.position[0];
+            let y = text_entry.position[1];
+
+            let mut min_x = f32::MAX;
+            let mut min_y = f32::MAX;
+            let mut max_x = f32::MIN;
+            let mut max_y = f32::MIN;
+
+            for layout_run in buffer.layout_runs() {
+                for glyph in layout_run.glyphs {
+                    let glyph_x = glyph.x;
+                    let glyph_y = glyph.y;
+                    let glyph_w = glyph.w;
+                    let glyph_h = glyph.x;
+
+                    min_x = min_x.min(glyph_x);
+                    min_y = min_y.min(glyph_y);
+                    max_x = max_x.max(glyph_x + glyph_w);
+                    max_y = max_y.max(glyph_y + glyph_h);
+                }
+            }
+
+            let width = max_x - min_x;
+            let height = max_y - min_y;
+
+            text_entry.bounds = Rect {
+                x,
+                y,
+                width,
+                height,
+            };
+
             let text_bounds = TextBounds {
                 left: 0,
                 top: 0,
-                right: *i.position.get(0).unwrap() as i32,
-                bottom: *i.position.get(1).unwrap() as i32,
+                right: self.size.width as i32,
+                bottom: self.size.height as i32,
             };
 
-            let default_color = Color::rgb(i.color[0], i.color[1], i.color[2]);
+            let default_color = if Some(index) == self.editing_text_index {
+                Color::rgb(0, 0, 255)
+            } else {
+                Color::rgb(
+                    text_entry.color[0],
+                    text_entry.color[1],
+                    text_entry.color[2],
+                )
+            };
 
             text_areas.push(TextArea {
-                buffer: buffer,
-                left: 0.0,
-                top: 0.0,
+                buffer,
+                left: x,
+                top: y,
                 scale: 1.0,
                 bounds: text_bounds,
                 default_color,
@@ -458,6 +574,7 @@ impl WindowState {
             text_areas,
             &mut self.swash_cache,
         );
+
         let mut all_vertices = Vec::new();
 
         for stroke in &self.strokes {
@@ -620,6 +737,9 @@ impl WindowState {
 struct Application {
     window_state: Option<WindowState>,
 }
+
+const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
+const DOUBLE_CLICK_DISTANCE: f64 = 5.0;
 
 impl ApplicationHandler for Application {
     fn about_to_wait(&mut self, _: &event_loop::ActiveEventLoop) {
