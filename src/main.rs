@@ -488,7 +488,7 @@ impl WindowState {
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+                label: Some("Strokes Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -512,22 +512,14 @@ impl WindowState {
             }
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-
-        let frame = self.surface.get_current_texture().unwrap();
-        let view = frame.texture.create_view(&TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor { label: None });
         {
-            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(RenderPassColorAttachment {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Text Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(wgpu::Color::WHITE),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -536,13 +528,13 @@ impl WindowState {
                 occlusion_query_set: None,
             });
 
-            let _ = self
-                .text_renderer
-                .render(&self.atlas, &self.viewport, &mut pass);
+            self.text_renderer
+                .render(&self.atlas, &self.viewport, &mut render_pass)
+                .unwrap();
         }
 
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
 
         self.atlas.trim();
 
