@@ -50,10 +50,10 @@ struct TextEntries {
 impl TextEntries {
     fn null() -> Self {
         TextEntries {
-            position: [0.0, 0.0], // Default placeholder for position
-            color: [0, 0, 0, 0],  // Default placeholder for color
-            text: String::new(),  // Empty string
-            pending: true,        // Default boolean
+            position: [0.0, 0.0], 
+            color: [0, 0, 0, 0],  
+            text: String::new(),  
+            pending: true,        
         }
     }
 }
@@ -192,12 +192,12 @@ impl WindowState {
                                         if let Some(text) = self.texts.last_mut() {
                                             if text.pending {
                                                 if text.text.chars().count() > 1 {
-                                                    text.text = text
-                                                        .text
-                                                        .chars()
-                                                        .take(text.text.chars().count() - 2)
-                                                        .collect();
-                                                    window.request_redraw();
+                                                text.text = text
+                                                    .text
+                                                    .chars()
+                                                    .take(text.text.chars().count() - 2)
+                                                    .collect();
+                                                window.request_redraw();
                                                 }
                                             }
                                         }
