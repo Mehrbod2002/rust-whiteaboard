@@ -1,10 +1,11 @@
 #![allow(dead_code, unused_imports)]
 use glyphon::{
-    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
-    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
+    cosmic_text::ttf_parser::name::Name, Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics,
+    Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use std::{
     borrow::Borrow,
+    collections::HashSet,
     fmt::{self, Error},
     sync::Arc,
 };
@@ -19,8 +20,8 @@ use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{ElementState, MouseButton, WindowEvent},
-    event_loop::EventLoop,
-    keyboard::{Key, KeyCode, KeyLocation, NamedKey, PhysicalKey},
+    event_loop::{self, EventLoop},
+    keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey},
     window::Window,
 };
 
@@ -38,7 +39,7 @@ struct Vertex {
     color: [f32; 4],
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TextEntries {
     position: [f32; 2],
     color: [u8; 4],
@@ -57,12 +58,21 @@ impl TextEntries {
     }
 }
 
+#[derive(Clone)]
+enum Action {
+    Stroke(Vec<Vertex>),
+    Text(TextEntries),
+}
+
 struct WindowState {
     device: wgpu::Device,
+    pressed_keys: HashSet<Key>,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     surface_config: SurfaceConfiguration,
     last_cursor_position: PhysicalPosition<f64>,
+    actions: Vec<Action>,
+    modifiers: ModifiersState,
     scale_factor: f64,
     size: PhysicalSize<u32>,
 
@@ -138,6 +148,8 @@ impl WindowState {
                         self.mouse_pressed = false;
                         if !self.current_stroke.is_empty() {
                             self.strokes.push(self.current_stroke.clone());
+                            self.actions
+                                .push(Action::Stroke(self.current_stroke.clone()));
                             self.current_stroke.clear();
                         }
                         window.request_redraw();
@@ -146,48 +158,89 @@ impl WindowState {
                 true
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if self.start_typing {
-                    if let Some(text_input) = &event.text {
-                        if let Some(text) = self.texts.last_mut() {
-                            if text.pending {
-                                text.text.push_str(text_input);
-                                window.request_redraw();
-                            }
-                        }
-                    }
-                    if let Key::Named(key) = event.logical_key {
-                        match key {
-                            NamedKey::GoBack => {
-                                self.start_typing = false;
-                                if let Some(text) = self.texts.last_mut() {
-                                    text.pending = false;
-                                }
-                                window.request_redraw();
-                            }
-                            NamedKey::Backspace => {
+                match event.state {
+                    ElementState::Pressed => {
+                        self.pressed_keys.insert(event.logical_key.clone());
+
+                        if self.start_typing {
+                            if let Some(text_input) = &event.text {
                                 if let Some(text) = self.texts.last_mut() {
                                     if text.pending {
-                                        text.text.pop();
+                                        text.text.push_str(text_input);
                                         window.request_redraw();
                                     }
                                 }
                             }
-                            _ => {}
+                            if let Key::Named(key) = event.logical_key {
+                                match key {
+                                    NamedKey::Enter => {
+                                        self.start_typing = false;
+                                        if let Some(text) = self.texts.last_mut() {
+                                            text.pending = false;
+                                            self.actions.push(Action::Text(text.clone()));
+                                        }
+                                        window.request_redraw();
+                                    }
+                                    NamedKey::GoBack => {
+                                        self.start_typing = false;
+                                        if let Some(text) = self.texts.last_mut() {
+                                            text.pending = false;
+                                        }
+                                        window.request_redraw();
+                                    }
+                                    NamedKey::Backspace => {
+                                        if let Some(text) = self.texts.last_mut() {
+                                            if text.pending {
+                                                if text.text.chars().count() > 1 {
+                                                    text.text = text
+                                                        .text
+                                                        .chars()
+                                                        .take(text.text.chars().count() - 2)
+                                                        .collect();
+                                                    window.request_redraw();
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        } else {
+                            if self.pressed_keys.contains(&Key::Named(NamedKey::Control))
+                                && self
+                                    .pressed_keys
+                                    .contains(&Key::Character("z".to_string().into()))
+                            {
+                                if let Some(action) = self.actions.pop() {
+                                    match action {
+                                        Action::Stroke(_) => {
+                                            self.strokes.pop();
+                                        }
+                                        Action::Text(_) => {
+                                            self.texts.pop();
+                                        }
+                                    }
+                                }
+                                window.request_redraw();
+                                return true;
+                            }
+                            if let Some(ref text) = event.text {
+                                match text.as_str() {
+                                    "1" => self.current_color = [1.0, 0.0, 0.0, 1.0], // Red
+                                    "2" => self.current_color = [0.0, 1.0, 0.0, 1.0], // Green
+                                    "3" => self.current_color = [0.0, 0.0, 1.0, 1.0], // Blue
+                                    "4" => self.current_color = [1.0, 1.0, 0.0, 1.0], // Yellow
+                                    "5" => self.current_color = [1.0, 0.0, 1.0, 1.0], // Magenta
+                                    "6" => self.current_color = [0.0, 1.0, 1.0, 1.0], // Cyan
+                                    "7" => self.current_color = [0.0, 0.0, 0.0, 1.0], // Black
+                                    "8" => self.current_color = [1.0, 1.0, 1.0, 1.0], // White
+                                    _ => (),
+                                }
+                            }
                         }
                     }
-                } else {
-                    if let Some(ref text) = event.text {
-                        match text.as_str() {
-                            "1" => self.current_color = [1.0, 0.0, 0.0, 1.0], // Red
-                            "2" => self.current_color = [0.0, 1.0, 0.0, 1.0], // Green
-                            "3" => self.current_color = [0.0, 0.0, 1.0, 1.0], // Blue
-                            "4" => self.current_color = [1.0, 1.0, 0.0, 1.0], // Yellow
-                            "5" => self.current_color = [1.0, 0.0, 1.0, 1.0], // Magenta
-                            "6" => self.current_color = [0.0, 1.0, 1.0, 1.0], // Cyan
-                            "7" => self.current_color = [0.0, 0.0, 0.0, 1.0], // Black
-                            "8" => self.current_color = [1.0, 1.0, 1.0, 1.0], // White
-                            _ => (),
-                        }
+                    ElementState::Released => {
+                        self.pressed_keys.remove(&event.logical_key);
                     }
                 }
                 true
@@ -309,6 +362,9 @@ impl WindowState {
             queue,
             scale_factor,
             surface,
+            actions: Vec::new(),
+            modifiers: ModifiersState::default(),
+            pressed_keys: HashSet::new(),
             surface_config,
             font_system,
             swash_cache,
@@ -599,24 +655,4 @@ impl ApplicationHandler for Application {
             _ => {}
         }
     }
-}
-
-fn push_char_to_array(
-    array: &mut [u8; 256],
-    current_length: &mut usize,
-    ch: char,
-) -> Result<(), &'static str> {
-    let mut buffer = [0u8; 4]; // Buffer for UTF-8 encoded bytes (max 4 bytes for a char)
-    let encoded = ch.encode_utf8(&mut buffer).as_bytes(); // Encode the char to UTF-8
-
-    if *current_length + encoded.len() > array.len() {
-        return Err("Array does not have enough space");
-    }
-
-    // Copy the encoded bytes into the array
-    array[*current_length..(*current_length + encoded.len())].copy_from_slice(encoded);
-
-    // Update the current length
-    *current_length += encoded.len();
-    Ok(())
 }
