@@ -4,7 +4,7 @@ use glyphon::{
     Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use std::{
-    borrow::Borrow,
+    borrow::{Borrow, BorrowMut},
     collections::HashSet,
     fmt::{self, Error},
     sync::Arc,
@@ -167,8 +167,7 @@ impl WindowState {
                         }
 
                         if double_click_detected {
-                            let mut text_found = false;
-                            for (i, text_entry) in self.texts.iter().enumerate() {
+                            for (i, text_entry) in self.texts.iter_mut().enumerate() {
                                 let bounds = &text_entry.bounds;
                                 if position.x >= bounds.x as f64
                                     && position.x <= (bounds.x + bounds.width) as f64
@@ -177,28 +176,18 @@ impl WindowState {
                                 {
                                     self.editing_text_index = Some(i);
                                     self.start_typing = true;
+                                    text_entry.pending = true;
                                     window.request_redraw();
-                                    text_found = true;
+
                                     break;
                                 }
-                            }
-                            if !text_found {
-                                let mut new_text_entry = TextEntries::null();
-                                let x = position.x as f32;
-                                let y = position.y as f32;
-                                new_text_entry.position = [x, y];
-                                new_text_entry.color = [0, 0, 0, 255];
-                                self.texts.push(new_text_entry);
-                                self.editing_text_index = Some(self.texts.len() - 1);
-                                self.start_typing = true;
-                                window.request_redraw();
                             }
                         }
 
                         self.last_click_time = Some(now);
                         self.last_click_position = Some(position);
 
-                        if self.start_typing {
+                        if self.start_typing && self.editing_text_index.is_none() {
                             self.start_typing = false;
                             if let Some(text) = self.texts.last_mut() {
                                 text.pending = false;
@@ -238,7 +227,7 @@ impl WindowState {
                     ElementState::Pressed => {
                         self.pressed_keys.insert(event.logical_key.clone());
 
-                        if self.start_typing {
+                        if self.start_typing || self.editing_text_index.is_some() {
                             if let Some(text_input) = &event.text {
                                 if let Some(text) = self.texts.last_mut() {
                                     if text.pending {
@@ -251,14 +240,28 @@ impl WindowState {
                                 match key {
                                     NamedKey::Enter => {
                                         self.start_typing = false;
+                                        self.editing_text_index = None;
                                         if let Some(text) = self.texts.last_mut() {
                                             text.pending = false;
                                             self.actions.push(Action::Text(text.clone()));
                                         }
                                         window.request_redraw();
                                     }
+                                    NamedKey::Delete => {
+                                        let text_entry =
+                                            if let Some(index) = self.editing_text_index {
+                                                self.texts.get_mut(index)
+                                            } else {
+                                                self.texts.last_mut()
+                                            };
+                                        if let Some(entry) = text_entry {
+                                            entry.text.pop();
+                                            window.request_redraw();
+                                        }
+                                    }
                                     NamedKey::GoBack => {
                                         self.start_typing = false;
+                                        self.editing_text_index = None;
                                         if let Some(text) = self.texts.last_mut() {
                                             text.pending = false;
                                             self.actions.push(Action::Text(text.clone()));
@@ -266,7 +269,21 @@ impl WindowState {
                                         window.request_redraw();
                                     }
                                     NamedKey::Backspace => {
-                                        if let Some(text) = self.texts.last_mut() {
+                                        if self.editing_text_index.is_some() {
+                                            let editing_text = self.texts
+                                                [self.editing_text_index.unwrap()]
+                                            .borrow_mut();
+                                            if editing_text.pending {
+                                                if editing_text.text.chars().count() > 1 {
+                                                    editing_text.text = editing_text
+                                                        .text
+                                                        .chars()
+                                                        .take(editing_text.text.chars().count() - 2)
+                                                        .collect();
+                                                    window.request_redraw();
+                                                }
+                                            }
+                                        } else if let Some(text) = self.texts.last_mut() {
                                             if text.pending {
                                                 if text.text.chars().count() > 1 {
                                                     text.text = text
@@ -607,10 +624,10 @@ impl WindowState {
 
         let mut buffers: Vec<glyphon::Buffer> = Vec::new();
 
-        for text_entry in &self.texts {
+        for (index, text_entry) in self.texts.iter().enumerate() {
             let mut buffer = self.text_buffer.clone();
             let mut text = text_entry.text.clone();
-            if text_entry.pending && self.start_typing && self.cursor_visible {
+            if text_entry.pending && Some(index) == self.editing_text_index && self.cursor_visible {
                 text.push('|');
             }
 
@@ -637,10 +654,11 @@ impl WindowState {
                 bottom: self.size.height as i32,
             };
 
-            let default_color = Color::rgb(
+            let default_color = Color::rgba(
                 text_entry.color[0],
                 text_entry.color[1],
                 text_entry.color[2],
+                text_entry.color[3],
             );
 
             text_areas.push(TextArea {
