@@ -58,10 +58,10 @@ struct TextEntries {
 }
 
 impl TextEntries {
-    fn null() -> Self {
+    fn null(color: [u8; 4]) -> Self {
         TextEntries {
             position: [0.0, 0.0],
-            color: [0, 0, 0, 0],
+            color,
             text: String::new(),
             pending: true,
             bounds: Rect {
@@ -195,7 +195,7 @@ impl WindowState {
                             }
                         } else {
                             self.start_typing = true;
-                            self.texts.push(TextEntries::null());
+                            self.texts.push(TextEntries::null(normalized_to_rgba(self.current_color)));
                             let position = self.last_cursor_position;
                             let x = position.x as f32;
                             let y = position.y as f32;
@@ -573,13 +573,15 @@ impl WindowState {
                 bottom: self.size.height as i32,
             };
 
+            let normalized_color = normalized_to_rgba(self.current_color);
             let default_color = if Some(index) == self.editing_text_index {
                 Color::rgb(0, 0, 255)
             } else {
-                Color::rgb(
-                    text_entry.color[0],
-                    text_entry.color[1],
-                    text_entry.color[2],
+                Color::rgba(
+                    normalized_color[0],
+                    normalized_color[1],
+                    normalized_color[2],
+                    normalized_color[3],
                 )
             };
 
@@ -845,4 +847,12 @@ impl ApplicationHandler for Application {
             _ => (),
         }
     }
+}
+
+fn normalized_to_rgba(normalized: [f32; 4]) -> [u8; 4] {
+    let red = (normalized[0] * 255.0) as u8;
+    let green = (normalized[1] * 255.0) as u8;
+    let blue = (normalized[2] * 255.0) as u8;
+    let alpha = (normalized[3] * 255.0) as u8;
+    [red, green, blue, alpha]
 }
