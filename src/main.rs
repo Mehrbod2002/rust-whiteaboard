@@ -34,7 +34,7 @@ fn main() {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
 struct Vertex {
     position: [f32; 2],
     color: [f32; 4],
@@ -74,7 +74,7 @@ impl TextEntries {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Action {
     Stroke(Vec<Vertex>),
     Text(TextEntries),
@@ -202,6 +202,7 @@ impl WindowState {
                             self.start_typing = false;
                             if let Some(text) = self.texts.last_mut() {
                                 text.pending = false;
+                                self.actions.push(Action::Text(text.clone()));
                             }
                         } else {
                             self.start_typing = true;
@@ -260,6 +261,7 @@ impl WindowState {
                                         self.start_typing = false;
                                         if let Some(text) = self.texts.last_mut() {
                                             text.pending = false;
+                                            self.actions.push(Action::Text(text.clone()));
                                         }
                                         window.request_redraw();
                                     }
@@ -477,6 +479,31 @@ impl WindowState {
 
     fn update(&mut self) -> Result<(), wgpu::SurfaceError> {
         let mut buffers: Vec<glyphon::Buffer> = Vec::new();
+        let mut text_areas: Vec<TextArea> = Vec::new();
+        let mut all_vertices = Vec::new();
+
+        self.actions.iter().for_each(|x| match x {
+            Action::Stroke(stroke) => {
+                if stroke.len() >= 2 {
+                    for i in 0..(stroke.len() - 1) {
+                        all_vertices.push(stroke[i]);
+                        all_vertices.push(stroke[i + 1]);
+                    }
+                }
+            }
+            Action::Text(text) => {
+                let mut buffer = self.text_buffer.clone();
+                buffer.set_text(
+                    &mut self.font_system,
+                    &text.text,
+                    Attrs::new().family(Family::SansSerif),
+                    Shaping::Advanced,
+                );
+
+                buffer.shape_until_scroll(&mut self.font_system, false);
+                buffers.push(buffer);
+            }
+        });
 
         const CURSOR_BLINK_INTERVAL: f32 = 0.5;
 
@@ -488,21 +515,6 @@ impl WindowState {
                 self.window.request_redraw();
             }
         }
-
-        for i in &self.texts {
-            let mut buffer = self.text_buffer.clone();
-            buffer.set_text(
-                &mut self.font_system,
-                &i.text,
-                Attrs::new().family(Family::SansSerif),
-                Shaping::Advanced,
-            );
-
-            buffer.shape_until_scroll(&mut self.font_system, false);
-            buffers.push(buffer);
-        }
-
-        let mut text_areas: Vec<TextArea> = Vec::new();
 
         for (index, (text_entry, buffer)) in self.texts.iter_mut().zip(buffers.iter()).enumerate() {
             let x = text_entry.position[0];
@@ -574,17 +586,6 @@ impl WindowState {
             text_areas,
             &mut self.swash_cache,
         );
-
-        let mut all_vertices = Vec::new();
-
-        for stroke in &self.strokes {
-            if stroke.len() >= 2 {
-                for i in 0..(stroke.len() - 1) {
-                    all_vertices.push(stroke[i]);
-                    all_vertices.push(stroke[i + 1]);
-                }
-            }
-        }
 
         if self.current_stroke.len() >= 2 {
             for i in 0..(self.current_stroke.len() - 1) {
