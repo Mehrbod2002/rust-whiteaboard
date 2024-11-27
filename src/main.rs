@@ -12,17 +12,18 @@ use std::{
 };
 use wgpu::{
     util::DeviceExt, vertex_attr_array, CommandEncoderDescriptor, CompositeAlphaMode,
-    DeviceDescriptor, Instance, InstanceDescriptor, LoadOp, MultisampleState, Operations,
-    PipelineCompilationOptions, PresentMode, RenderPassColorAttachment, RenderPassDescriptor,
-    RequestAdapterOptions, StoreOp, SurfaceConfiguration, TextureFormat, TextureUsages,
-    TextureViewDescriptor,
+    DeviceDescriptor, FragmentState, Instance, InstanceDescriptor, LoadOp, MultisampleState,
+    Operations, PipelineCompilationOptions, PresentMode, PrimitiveState, RenderPassColorAttachment,
+    RenderPassDescriptor, RequestAdapterOptions, ShaderModuleDescriptor, StoreOp,
+    SurfaceConfiguration, TextureFormat, TextureUsages, TextureViewDescriptor, VertexBufferLayout,
+    VertexState,
 };
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{ElementState, MouseButton, WindowEvent},
     event_loop::{self, ControlFlow, EventLoop},
-    keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey},
+    keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr},
     window::Window,
 };
 
@@ -40,12 +41,62 @@ struct Vertex {
     color: [f32; 4],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct Rect {
     x: f32,
     y: f32,
     width: f32,
     height: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
+struct Rectangle {
+    first: [f32; 2],
+    last: [f32; 2],
+    color: [f32; 4],
+}
+
+impl Rectangle {
+    fn to_vertices(&self) -> Vec<Vertex> {
+        let (x1, y1) = (self.first[0], self.first[1]);
+        let (x2, y2) = (self.last[0], self.last[1]);
+
+        vec![
+            Vertex {
+                position: [x1, y2],
+                color: self.color,
+            },
+            Vertex {
+                position: [x2, y2],
+                color: self.color,
+            },
+            Vertex {
+                position: [x2, y2],
+                color: self.color,
+            },
+            Vertex {
+                position: [x2, y1],
+                color: self.color,
+            },
+            Vertex {
+                position: [x2, y1],
+                color: self.color,
+            },
+            Vertex {
+                position: [x1, y1],
+                color: self.color,
+            },
+            Vertex {
+                position: [x1, y1],
+                color: self.color,
+            },
+            Vertex {
+                position: [x1, y2],
+                color: self.color,
+            },
+        ]
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +129,7 @@ impl TextEntries {
 enum Action {
     Stroke(Vec<Vertex>),
     Text(TextEntries),
+    Shapes(Rectangle),
 }
 
 struct WindowState {
@@ -108,9 +160,12 @@ struct WindowState {
     current_color: [f32; 4],
 
     render_pipeline: wgpu::RenderPipeline,
+    rectangle_shader: Option<wgpu::RenderPipeline>,
     vertex_buffer: wgpu::Buffer,
     start_typing: bool,
-
+    shape_positions: Vec<Vertex>,
+    shapes: Vec<Rectangle>,
+    create_rect: bool,
     cursor_visible: bool,
     cursor_timer: Instant,
     last_click_time: Option<Instant>,
@@ -127,13 +182,31 @@ impl WindowState {
                 position,
             } => {
                 self.last_cursor_position = *position;
+
                 if self.mouse_pressed {
                     let x = position.x as f32 / self.size.width as f32 * 2.0 - 1.0;
                     let y = -(position.y as f32 / self.size.height as f32 * 2.0 - 1.0);
-                    self.current_stroke.push(Vertex {
-                        position: [x, y],
-                        color: self.current_color,
-                    });
+                    if self.create_rect {
+                        if self.shape_positions.is_empty() {
+                            self.shape_positions.push(Vertex {
+                                position: [x, y],
+                                color: self.current_color,
+                            });
+                        } else {
+                            if self.shape_positions.len() > 1 {
+                                self.shape_positions.pop();
+                            }
+                            self.shape_positions.push(Vertex {
+                                position: [x, y],
+                                color: self.current_color,
+                            });
+                        }
+                    } else {
+                        self.current_stroke.push(Vertex {
+                            position: [x, y],
+                            color: self.current_color,
+                        });
+                    }
 
                     window.request_redraw();
                 }
@@ -195,7 +268,8 @@ impl WindowState {
                             }
                         } else {
                             self.start_typing = true;
-                            self.texts.push(TextEntries::null(normalized_to_rgba(self.current_color)));
+                            self.texts
+                                .push(TextEntries::null(normalized_to_rgba(self.current_color)));
                             let position = self.last_cursor_position;
                             let x = position.x as f32;
                             let y = position.y as f32;
@@ -209,6 +283,13 @@ impl WindowState {
                     if *state == ElementState::Pressed {
                         self.mouse_pressed = true;
                         self.current_stroke = Vec::new();
+
+                        if self
+                            .pressed_keys
+                            .contains(&Key::Character(SmolStr::new("s")))
+                        {
+                            self.create_rect = true;
+                        }
                     } else {
                         self.mouse_pressed = false;
                         if !self.current_stroke.is_empty() {
@@ -313,6 +394,9 @@ impl WindowState {
                                         Action::Text(_) => {
                                             self.texts.pop();
                                         }
+                                        Action::Shapes(_) => {
+                                            self.shapes.pop();
+                                        }
                                     }
                                 }
                                 window.request_redraw();
@@ -335,6 +419,22 @@ impl WindowState {
                     }
                     ElementState::Released => {
                         self.pressed_keys.remove(&event.logical_key);
+                        self.create_rect = false;
+
+                        if let (Some(first), Some(last)) =
+                            (self.shape_positions.first(), self.shape_positions.last())
+                        {
+                            let rectangle = Rectangle {
+                                first: first.position,
+                                last: last.position,
+                                color: self.current_color,
+                            };
+
+                            self.actions.push(Action::Shapes(rectangle));
+                            self.shapes.push(rectangle);
+                        }
+
+                        self.shape_positions.clear();
                     }
                 }
                 true
@@ -407,6 +507,55 @@ impl WindowState {
             push_constant_ranges: &[],
         });
 
+        let shader_shape = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("rect shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shape.wgsl").into()),
+        });
+        let rectangle_shader = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rect pipline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader_shape,
+                entry_point: Some("rectangle_vs"),
+                compilation_options: PipelineCompilationOptions::default(),
+                buffers: &[VertexBufferLayout {
+                    array_stride: size_of::<Vertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                            shader_location: 1,
+                        },
+                    ],
+                }],
+            },
+            primitive: PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                strip_index_format: None,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            fragment: Some(FragmentState {
+                module: &shader_shape,
+                entry_point: Some("fs_main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&pipeline_layout),
@@ -452,6 +601,7 @@ impl WindowState {
 
         Self {
             device,
+            shapes: Vec::new(),
             last_cursor_position: PhysicalPosition::new(0.0, 0.0),
             queue,
             scale_factor,
@@ -466,6 +616,7 @@ impl WindowState {
             atlas,
             text_renderer,
             text_buffer,
+            create_rect: false,
             window,
             size: physical_size,
             mouse_pressed: false,
@@ -482,6 +633,8 @@ impl WindowState {
             last_click_position: None,
             editing_text_index: None,
             selection_vertex_buffer: None,
+            rectangle_shader: Some(rectangle_shader),
+            shape_positions: Vec::new(),
         }
     }
 
@@ -520,6 +673,7 @@ impl WindowState {
                 buffer.shape_until_scroll(&mut self.font_system, false);
                 buffers.push(buffer);
             }
+            _ => (),
         });
 
         const CURSOR_BLINK_INTERVAL: f32 = 0.5;
@@ -626,10 +780,10 @@ impl WindowState {
 
         let mut buffers: Vec<glyphon::Buffer> = Vec::new();
 
-        for (index, text_entry) in self.texts.iter().enumerate() {
+        for text_entry in self.texts.iter() {
             let mut buffer = self.text_buffer.clone();
             let mut text = text_entry.text.clone();
-            if text_entry.pending && Some(index) == self.editing_text_index && self.cursor_visible {
+            if text_entry.pending && self.cursor_visible {
                 text.push('|');
             }
 
@@ -715,6 +869,43 @@ impl WindowState {
                 occlusion_query_set: None,
             });
 
+            if let Some(rectangle_shader) = &self.rectangle_shader {
+                let mut temp_shapes = self.shapes.clone();
+
+                if self.create_rect {
+                    if let (Some(first), Some(last)) =
+                        (&self.shape_positions.first(), &self.shape_positions.last())
+                    {
+                        let rectangle = Rectangle {
+                            first: first.position,
+                            last: last.position,
+                            color: self.current_color,
+                        };
+
+                        temp_shapes.push(rectangle);
+                    }
+                }
+
+                let flattened_shapes: Vec<_> = temp_shapes
+                    .iter()
+                    .flat_map(|rect| rect.to_vertices())
+                    .collect();
+
+                if !flattened_shapes.is_empty() {
+                    let rectangle_vertex_buffer =
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("Rectangle Vertex Buffer"),
+                                contents: bytemuck::cast_slice(&flattened_shapes),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            });
+
+                    render_pass.set_pipeline(&rectangle_shader);
+                    render_pass.set_vertex_buffer(0, rectangle_vertex_buffer.slice(..));
+                    render_pass.draw(0..flattened_shapes.len() as u32, 0..1);
+                }
+            }
+
             if self.vertex_buffer.size() > 0 {
                 render_pass.set_pipeline(&self.render_pipeline);
                 render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
@@ -799,7 +990,7 @@ impl ApplicationHandler for Application {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        event_loop.set_control_flow(ControlFlow::Poll);
+        // event_loop.set_control_flow(ControlFlow::Poll);
         let Some(state) = &mut self.window_state else {
             return;
         };
