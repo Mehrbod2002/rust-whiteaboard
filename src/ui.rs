@@ -1,15 +1,15 @@
 use egui::ViewportId;
 use egui_wgpu::{
-    wgpu::{CommandEncoder, Device, Queue, StoreOp, TextureFormat, TextureView},
+    wgpu::{CommandEncoder, Device, Queue, RenderPass, StoreOp, TextureFormat, TextureView},
     Renderer, ScreenDescriptor,
 };
 use egui_winit::State;
 use winit::{event::WindowEvent, window::Window};
 
 pub struct EguiRenderer {
-    state: State,
-    renderer: Renderer,
-    frame_started: bool,
+    pub state: State,
+    pub renderer: Renderer,
+    pub frame_started: bool,
 }
 
 impl EguiRenderer {
@@ -51,7 +51,7 @@ impl EguiRenderer {
         let _ = self.state.on_window_event(window, event);
     }
 
-    pub fn ppp(&mut self, v: f32) {
+    pub fn set_pixels_per_point(&mut self, v: f32) {
         self.context().set_pixels_per_point(v);
     }
 
@@ -59,16 +59,18 @@ impl EguiRenderer {
         &mut self,
         device: &Device,
         queue: &Queue,
+        render_pass: RenderPass,
         encoder: &mut CommandEncoder,
         window: &Window,
-        window_surface_view: &TextureView,
+        _window_surface_view: &TextureView,
         screen_descriptor: ScreenDescriptor,
     ) {
         if !self.frame_started {
             panic!("begin_frame must be called before end_frame_and_draw can be called!");
         }
 
-        self.ppp(screen_descriptor.pixels_per_point);
+        self.context()
+            .set_pixels_per_point(screen_descriptor.pixels_per_point);
 
         let full_output = self.state.egui_ctx().end_pass();
 
@@ -85,23 +87,12 @@ impl EguiRenderer {
         }
         self.renderer
             .update_buffers(device, queue, encoder, &tris, &screen_descriptor);
-        let rpass = encoder.begin_render_pass(&egui_wgpu::wgpu::RenderPassDescriptor {
-            color_attachments: &[Some(egui_wgpu::wgpu::RenderPassColorAttachment {
-                view: window_surface_view,
-                resolve_target: None,
-                ops: egui_wgpu::wgpu::Operations {
-                    load: egui_wgpu::wgpu::LoadOp::Load,
-                    store: StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            label: Some("egui main render pass"),
-            occlusion_query_set: None,
-        });
 
-        self.renderer
-            .render(&mut rpass.forget_lifetime(), &tris, &screen_descriptor);
+        self.renderer.render(
+            &mut render_pass.forget_lifetime(),
+            &tris,
+            &screen_descriptor,
+        );
         for x in &full_output.textures_delta.free {
             self.renderer.free_texture(x)
         }

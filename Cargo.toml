@@ -7,7 +7,7 @@ edition = "2021"
 futures = "0.3"
 pollster = "0.3"
 bytemuck = { version = "1.19.0", features = ["derive"] }
-glyphon = "0.7.0"
+glyphon = { git = "https://github.com/mehrbod2002/glyphon", branch="egui-wgpu", features=["egui"] }
 winit = "0.30.5"
 egui = "0.29.1"
 egui-wgpu = "0.29.1"

@@ -1,16 +1,19 @@
 #![allow(dead_code, unused_imports)]
 mod ui;
-// use glyphon::{
-//     cosmic_text::ttf_parser::name::Name, Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics,
-//     Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
-// };
-use egui_wgpu::wgpu::{
-    util::DeviceExt, vertex_attr_array, CommandEncoderDescriptor, CompositeAlphaMode,
-    DeviceDescriptor, FragmentState, Instance, InstanceDescriptor, LoadOp, MultisampleState,
-    Operations, PipelineCompilationOptions, PresentMode, PrimitiveState, RenderPassColorAttachment,
-    RenderPassDescriptor, RequestAdapterOptions, ShaderModuleDescriptor, StoreOp,
-    SurfaceConfiguration, TextureFormat, TextureUsages, TextureViewDescriptor, VertexBufferLayout,
-    VertexState,
+use egui_wgpu::{
+    wgpu::{
+        util::DeviceExt, vertex_attr_array, CommandEncoderDescriptor, CompositeAlphaMode,
+        DeviceDescriptor, FragmentState, Instance, InstanceDescriptor, LoadOp, MultisampleState,
+        Operations, PipelineCompilationOptions, PresentMode, PrimitiveState,
+        RenderPassColorAttachment, RenderPassDescriptor, RequestAdapterOptions,
+        ShaderModuleDescriptor, StoreOp, SurfaceConfiguration, TextureFormat, TextureUsages,
+        TextureViewDescriptor, VertexBufferLayout, VertexState,
+    },
+    ScreenDescriptor,
+};
+use glyphon::{
+    cosmic_text::ttf_parser::name::Name, Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics,
+    Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use std::{
     borrow::{Borrow, BorrowMut},
@@ -60,7 +63,7 @@ struct Rectangle {
 }
 
 impl Rectangle {
-    fn to_vertices(&self) -> Vec<Vertex> {
+    fn to_vertices(self) -> Vec<Vertex> {
         let (x1, y1) = (self.first[0], self.first[1]);
         let (x2, y2) = (self.last[0], self.last[1]);
 
@@ -147,13 +150,13 @@ struct WindowState {
     egui_renderer: EguiRenderer,
     size: PhysicalSize<u32>,
 
-    // font_system: FontSystem,
-    // swash_cache: SwashCache,
-    // viewport: glyphon::Viewport,
-    // texts: Vec<TextEntries>,
-    // atlas: glyphon::TextAtlas,
-    // text_renderer: glyphon::TextRenderer,
-    // text_buffer: glyphon::Buffer,
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    viewport: glyphon::Viewport,
+    texts: Vec<TextEntries>,
+    atlas: glyphon::TextAtlas,
+    text_renderer: glyphon::TextRenderer,
+    text_buffer: glyphon::Buffer,
     window: Arc<Window>,
 
     mouse_pressed: bool,
@@ -219,65 +222,62 @@ impl WindowState {
                 state,
                 button,
             } => {
-                if *button == MouseButton::Right {
-                    if *state == ElementState::Pressed {
-                        let now = Instant::now();
+                if *button == MouseButton::Right && *state == ElementState::Pressed {
+                    let now = Instant::now();
+                    let position = self.last_cursor_position;
+
+                    let mut double_click_detected = false;
+
+                    if let Some(last_click_time) = self.last_click_time {
+                        if now.duration_since(last_click_time) <= DOUBLE_CLICK_THRESHOLD {
+                            if let Some(last_click_position) = self.last_click_position {
+                                let dx = position.x - last_click_position.x;
+                                let dy = position.y - last_click_position.y;
+                                let distance_squared = dx * dx + dy * dy;
+                                if distance_squared <= DOUBLE_CLICK_DISTANCE * DOUBLE_CLICK_DISTANCE
+                                {
+                                    double_click_detected = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if double_click_detected {
+                        for (i, text_entry) in self.texts.iter_mut().enumerate() {
+                            let bounds = &text_entry.bounds;
+                            if position.x >= bounds.x as f64
+                                && position.x <= (bounds.x + bounds.width) as f64
+                                && position.y >= bounds.y as f64
+                                && position.y <= (bounds.y + bounds.height) as f64
+                            {
+                                self.editing_text_index = Some(i);
+                                self.start_typing = true;
+                                text_entry.pending = true;
+                                window.request_redraw();
+
+                                break;
+                            }
+                        }
+                    }
+
+                    self.last_click_time = Some(now);
+                    self.last_click_position = Some(position);
+
+                    if self.start_typing && self.editing_text_index.is_none() {
+                        self.start_typing = false;
+                        if let Some(text) = self.texts.last_mut() {
+                            text.pending = false;
+                            self.actions.push(Action::Text(text.clone()));
+                        }
+                    } else {
+                        self.start_typing = true;
+                        self.texts
+                            .push(TextEntries::null(normalized_to_rgba(self.current_color)));
                         let position = self.last_cursor_position;
-
-                        // let mut double_click_detected = false;
-
-                        // if let Some(last_click_time) = self.last_click_time {
-                        //     if now.duration_since(last_click_time) <= DOUBLE_CLICK_THRESHOLD {
-                        //         if let Some(last_click_position) = self.last_click_position {
-                        //             let dx = position.x - last_click_position.x;
-                        //             let dy = position.y - last_click_position.y;
-                        //             let distance_squared = dx * dx + dy * dy;
-                        //             if distance_squared
-                        //                 <= DOUBLE_CLICK_DISTANCE * DOUBLE_CLICK_DISTANCE
-                        //             {
-                        //                 double_click_detected = true;
-                        //             }
-                        //         }
-                        //     }
-                        // }
-
-                        // if double_click_detected {
-                        //     for (i, text_entry) in self.texts.iter_mut().enumerate() {
-                        //         let bounds = &text_entry.bounds;
-                        //         if position.x >= bounds.x as f64
-                        //             && position.x <= (bounds.x + bounds.width) as f64
-                        //             && position.y >= bounds.y as f64
-                        //             && position.y <= (bounds.y + bounds.height) as f64
-                        //         {
-                        //             self.editing_text_index = Some(i);
-                        //             self.start_typing = true;
-                        //             text_entry.pending = true;
-                        //             window.request_redraw();
-
-                        //             break;
-                        //         }
-                        //     }
-                        // }
-
-                        self.last_click_time = Some(now);
-                        self.last_click_position = Some(position);
-
-                        if self.start_typing && self.editing_text_index.is_none() {
-                            self.start_typing = false;
-                            // if let Some(text) = self.texts.last_mut() {
-                            //     text.pending = false;
-                            //     self.actions.push(Action::Text(text.clone()));
-                            // }
-                        } else {
-                            // self.start_typing = true;
-                            // self.texts
-                            //     .push(TextEntries::null(normalized_to_rgba(self.current_color)));
-                            // let position = self.last_cursor_position;
-                            // let x = position.x as f32;
-                            // let y = position.y as f32;
-                            // if let Some(text) = self.texts.last_mut() {
-                            //     text.position = [x, y];
-                            // }
+                        let x = position.x as f32;
+                        let y = position.y as f32;
+                        if let Some(text) = self.texts.last_mut() {
+                            text.position = [x, y];
                         }
                     }
                 }
@@ -311,74 +311,74 @@ impl WindowState {
                         self.pressed_keys.insert(event.logical_key.clone());
 
                         if self.start_typing || self.editing_text_index.is_some() {
-                            // if let Some(text_input) = &event.text {
-                            //     if let Some(text) = self.texts.last_mut() {
-                            //         if text.pending {
-                            //             text.text.push_str(text_input);
-                            //             window.request_redraw();
-                            //         }
-                            //     }
-                            // }
+                            if let Some(text_input) = &event.text {
+                                if let Some(text) = self.texts.last_mut() {
+                                    if text.pending {
+                                        text.text.push_str(text_input);
+                                        window.request_redraw();
+                                    }
+                                }
+                            }
                             if let Key::Named(key) = event.logical_key {
                                 match key {
                                     NamedKey::Enter => {
                                         self.start_typing = false;
                                         self.editing_text_index = None;
-                                        // if let Some(text) = self.texts.last_mut() {
-                                        //     text.pending = false;
-                                        //     self.actions.push(Action::Text(text.clone()));
-                                        // }
+                                        if let Some(text) = self.texts.last_mut() {
+                                            text.pending = false;
+                                            self.actions.push(Action::Text(text.clone()));
+                                        }
                                         window.request_redraw();
                                     }
                                     NamedKey::Delete => {
-                                        // let text_entry =
-                                        //     if let Some(index) = self.editing_text_index {
-                                        //         self.texts.get_mut(index)
-                                        //     } else {
-                                        //         self.texts.last_mut()
-                                        //     };
-                                        // if let Some(entry) = text_entry {
-                                        //     entry.text.pop();
-                                        //     window.request_redraw();
-                                        // }
+                                        let text_entry =
+                                            if let Some(index) = self.editing_text_index {
+                                                self.texts.get_mut(index)
+                                            } else {
+                                                self.texts.last_mut()
+                                            };
+                                        if let Some(entry) = text_entry {
+                                            entry.text.pop();
+                                            window.request_redraw();
+                                        }
                                     }
-                                    // NamedKey::GoBack => {
-                                    //     self.start_typing = false;
-                                    //     self.editing_text_index = None;
-                                    //     if let Some(text) = self.texts.last_mut() {
-                                    //         text.pending = false;
-                                    //         self.actions.push(Action::Text(text.clone()));
-                                    //     }
-                                    //     window.request_redraw();
-                                    // }
-                                    // NamedKey::Backspace => {
-                                    //     if self.editing_text_index.is_some() {
-                                    //         let editing_text = self.texts
-                                    //             [self.editing_text_index.unwrap()]
-                                    //         .borrow_mut();
-                                    //         if editing_text.pending {
-                                    //             if editing_text.text.chars().count() > 1 {
-                                    //                 editing_text.text = editing_text
-                                    //                     .text
-                                    //                     .chars()
-                                    //                     .take(editing_text.text.chars().count() - 2)
-                                    //                     .collect();
-                                    //                 window.request_redraw();
-                                    //             }
-                                    //         }
-                                    //     } else if let Some(text) = self.texts.last_mut() {
-                                    //         if text.pending {
-                                    //             if text.text.chars().count() > 1 {
-                                    //                 text.text = text
-                                    //                     .text
-                                    //                     .chars()
-                                    //                     .take(text.text.chars().count() - 2)
-                                    //                     .collect();
-                                    //                 window.request_redraw();
-                                    //             }
-                                    //         }
-                                    //     }
-                                    // }
+                                    NamedKey::GoBack => {
+                                        self.start_typing = false;
+                                        self.editing_text_index = None;
+                                        if let Some(text) = self.texts.last_mut() {
+                                            text.pending = false;
+                                            self.actions.push(Action::Text(text.clone()));
+                                        }
+                                        window.request_redraw();
+                                    }
+                                    NamedKey::Backspace => {
+                                        if self.editing_text_index.is_some() {
+                                            let editing_text = self.texts
+                                                [self.editing_text_index.unwrap()]
+                                            .borrow_mut();
+                                            if editing_text.pending {
+                                                if editing_text.text.chars().count() > 1 {
+                                                    editing_text.text = editing_text
+                                                        .text
+                                                        .chars()
+                                                        .take(editing_text.text.chars().count() - 2)
+                                                        .collect();
+                                                    window.request_redraw();
+                                                }
+                                            }
+                                        } else if let Some(text) = self.texts.last_mut() {
+                                            if text.pending {
+                                                if text.text.chars().count() > 1 {
+                                                    text.text = text
+                                                        .text
+                                                        .chars()
+                                                        .take(text.text.chars().count() - 2)
+                                                        .collect();
+                                                    window.request_redraw();
+                                                }
+                                            }
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -394,7 +394,7 @@ impl WindowState {
                                             self.strokes.pop();
                                         }
                                         Action::Text(_) => {
-                                            // self.texts.pop();
+                                            self.texts.pop();
                                         }
                                         Action::Shapes(_) => {
                                             self.shapes.pop();
@@ -480,24 +480,24 @@ impl WindowState {
         let egui_renderer = EguiRenderer::new(&window, &device, surface_config.format, None, 1);
         surface.configure(&device, &surface_config);
 
-        // let mut font_system = FontSystem::new();
-        // let swash_cache = SwashCache::new();
-        // let cache = Cache::new(&device);
-        // let viewport = Viewport::new(&device, &cache);
-        // let mut atlas = TextAtlas::new(&device, &queue, &cache, swapchain_format);
-        // let text_renderer =
-        //     TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
-        // let mut text_buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
+        let mut font_system = FontSystem::new();
+        let swash_cache = SwashCache::new();
+        let cache = Cache::new(&device);
+        let viewport = Viewport::new(&device, &cache);
+        let mut atlas = TextAtlas::new(&device, &queue, &cache, swapchain_format);
+        let text_renderer =
+            TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
+        let mut text_buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
 
-        // let physical_width = (physical_size.width as f64 * scale_factor) as f32;
-        // let physical_height = (physical_size.height as f64 * scale_factor) as f32;
+        let physical_width = (physical_size.width as f64 * scale_factor) as f32;
+        let physical_height = (physical_size.height as f64 * scale_factor) as f32;
 
-        // text_buffer.set_size(
-        //     &mut font_system,
-        //     Some(physical_width),
-        //     Some(physical_height),
-        // );
-        // text_buffer.shape_until_scroll(&mut font_system, false);
+        text_buffer.set_size(
+            &mut font_system,
+            Some(physical_width),
+            Some(physical_height),
+        );
+        text_buffer.shape_until_scroll(&mut font_system, false);
 
         let shader = device.create_shader_module(egui_wgpu::wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
@@ -620,13 +620,13 @@ impl WindowState {
             modifiers: ModifiersState::default(),
             pressed_keys: HashSet::new(),
             surface_config,
-            // font_system,
-            // swash_cache,
-            // viewport,
-            // atlas,
-            // text_renderer,
-            // text_buffer,
-            // texts: Vec::new(),
+            font_system,
+            swash_cache,
+            viewport,
+            atlas,
+            text_renderer,
+            text_buffer,
+            texts: Vec::new(),
             create_rect: false,
             window,
             size: physical_size,
@@ -659,12 +659,12 @@ impl WindowState {
     }
 
     fn update(&mut self) -> Result<(), egui_wgpu::wgpu::SurfaceError> {
-        // let mut buffers: Vec<glyphon::Buffer> = Vec::new();
-        // let mut text_areas: Vec<TextArea> = Vec::new();
+        let mut buffers: Vec<glyphon::Buffer> = Vec::new();
+        let mut text_areas: Vec<TextArea> = Vec::new();
         let mut all_vertices = Vec::new();
 
-        self.actions.iter().for_each(|x| match x {
-            Action::Stroke(stroke) => {
+        self.actions.iter().for_each(|x| {
+            if let Action::Stroke(stroke) = x {
                 if stroke.len() >= 2 {
                     for i in 0..(stroke.len() - 1) {
                         all_vertices.push(stroke[i]);
@@ -672,104 +672,91 @@ impl WindowState {
                     }
                 }
             }
-            // Action::Text(text) => {
-            //     let mut buffer = self.text_buffer.clone();
-            //     buffer.set_text(
-            //         &mut self.font_system,
-            //         &text.text,
-            //         Attrs::new().family(Family::SansSerif),
-            //         Shaping::Advanced,
-            //     );
-
-            //     buffer.shape_until_scroll(&mut self.font_system, false);
-            //     buffers.push(buffer);
-            // }
-            _ => (),
         });
 
-        // const CURSOR_BLINK_INTERVAL: f32 = 0.5;
+        const CURSOR_BLINK_INTERVAL: f32 = 0.5;
 
-        // if self.start_typing {
-        //     let elapsed = self.cursor_timer.elapsed().as_secs_f32();
-        //     if elapsed >= CURSOR_BLINK_INTERVAL {
-        //         self.cursor_visible = !self.cursor_visible;
-        //         self.cursor_timer = Instant::now();
-        //         self.window.request_redraw();
-        //     }
-        // }
+        if self.start_typing {
+            let elapsed = self.cursor_timer.elapsed().as_secs_f32();
+            if elapsed >= CURSOR_BLINK_INTERVAL {
+                self.cursor_visible = !self.cursor_visible;
+                self.cursor_timer = Instant::now();
+                self.window.request_redraw();
+            }
+        }
 
-        // for (index, (text_entry, buffer)) in self.texts.iter_mut().zip(buffers.iter()).enumerate() {
-        //     let x = text_entry.position[0];
-        //     let y = text_entry.position[1];
+        for (index, (text_entry, buffer)) in self.texts.iter_mut().zip(buffers.iter()).enumerate() {
+            let x = text_entry.position[0];
+            let y = text_entry.position[1];
 
-        //     let mut min_x = f32::MAX;
-        //     let mut min_y = f32::MAX;
-        //     let mut max_x = f32::MIN;
-        //     let mut max_y = f32::MIN;
+            let mut min_x = f32::MAX;
+            let mut min_y = f32::MAX;
+            let mut max_x = f32::MIN;
+            let mut max_y = f32::MIN;
 
-        //     for layout_run in buffer.layout_runs() {
-        //         for glyph in layout_run.glyphs {
-        //             let glyph_x = glyph.x;
-        //             let glyph_y = glyph.y;
-        //             let glyph_w = glyph.w;
-        //             let glyph_h = glyph.x;
+            for layout_run in buffer.layout_runs() {
+                for glyph in layout_run.glyphs {
+                    let glyph_x = glyph.x;
+                    let glyph_y = glyph.y;
+                    let glyph_w = glyph.w;
+                    let glyph_h = glyph.x;
 
-        //             min_x = min_x.min(glyph_x);
-        //             min_y = min_y.min(glyph_y);
-        //             max_x = max_x.max(glyph_x + glyph_w);
-        //             max_y = max_y.max(glyph_y + glyph_h);
-        //         }
-        //     }
+                    min_x = min_x.min(glyph_x);
+                    min_y = min_y.min(glyph_y);
+                    max_x = max_x.max(glyph_x + glyph_w);
+                    max_y = max_y.max(glyph_y + glyph_h);
+                }
+            }
 
-        //     let width = max_x - min_x;
-        //     let height = max_y - min_y;
+            let width = max_x - min_x;
+            let height = max_y - min_y;
 
-        //     text_entry.bounds = Rect {
-        //         x,
-        //         y,
-        //         width,
-        //         height,
-        //     };
+            text_entry.bounds = Rect {
+                x,
+                y,
+                width,
+                height,
+            };
 
-        //     let text_bounds = TextBounds {
-        //         left: 0,
-        //         top: 0,
-        //         right: self.size.width as i32,
-        //         bottom: self.size.height as i32,
-        //     };
+            let text_bounds = TextBounds {
+                left: 0,
+                top: 0,
+                right: self.size.width as i32,
+                bottom: self.size.height as i32,
+            };
 
-        //     let normalized_color = normalized_to_rgba(self.current_color);
-        //     let default_color = if Some(index) == self.editing_text_index {
-        //         Color::rgb(0, 0, 255)
-        //     } else {
-        //         Color::rgba(
-        //             normalized_color[0],
-        //             normalized_color[1],
-        //             normalized_color[2],
-        //             normalized_color[3],
-        //         )
-        //     };
+            let normalized_color = normalized_to_rgba(self.current_color);
+            let default_color = if Some(index) == self.editing_text_index {
+                Color::rgb(0, 0, 255)
+            } else {
+                Color::rgba(
+                    normalized_color[0],
+                    normalized_color[1],
+                    normalized_color[2],
+                    normalized_color[3],
+                )
+            };
 
-        //     text_areas.push(TextArea {
-        //         buffer,
-        //         left: x,
-        //         top: y,
-        //         scale: 1.0,
-        //         bounds: text_bounds,
-        //         default_color,
-        //         custom_glyphs: &[],
-        //     });
-        // }
+            text_areas.push(TextArea {
+                buffer,
+                left: x,
+                top: y,
+                scale: 1.0,
+                bounds: text_bounds,
+                default_color,
+                custom_glyphs: &[],
+            });
+        }
 
-        // let _ = self.text_renderer.prepare(
-        //     &self.device,
-        //     &self.queue,
-        //     &mut self.font_system,
-        //     &mut self.atlas,
-        //     &self.viewport,
-        //     text_areas,
-        //     &mut self.swash_cache,
-        // );
+        let _ = self.text_renderer.prepare(
+            &self.device,
+            &self.queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            text_areas,
+            &mut self.swash_cache,
+        );
 
         if self.current_stroke.len() >= 2 {
             for i in 0..(self.current_stroke.len() - 1) {
@@ -790,65 +777,65 @@ impl WindowState {
                     });
         }
 
-        // let mut buffers: Vec<glyphon::Buffer> = Vec::new();
+        let mut buffers: Vec<glyphon::Buffer> = Vec::new();
 
-        // for text_entry in self.texts.iter() {
-        //     let mut buffer = self.text_buffer.clone();
-        //     let mut text = text_entry.text.clone();
-        //     if text_entry.pending && self.cursor_visible {
-        //         text.push('|');
-        //     }
+        for text_entry in self.texts.iter() {
+            let mut buffer = self.text_buffer.clone();
+            let mut text = text_entry.text.clone();
+            if text_entry.pending && self.cursor_visible {
+                text.push('|');
+            }
 
-        //     buffer.set_text(
-        //         &mut self.font_system,
-        //         &text,
-        //         Attrs::new().family(Family::SansSerif),
-        //         Shaping::Advanced,
-        //     );
+            buffer.set_text(
+                &mut self.font_system,
+                &text,
+                Attrs::new().family(Family::SansSerif),
+                Shaping::Advanced,
+            );
 
-        //     buffers.push(buffer);
-        // }
+            buffers.push(buffer);
+        }
 
-        // let mut text_areas: Vec<TextArea> = Vec::new();
+        let mut text_areas: Vec<TextArea> = Vec::new();
 
-        // for (text_entry, buffer) in self.texts.iter().zip(buffers.iter()) {
-        //     let x = text_entry.position[0];
-        //     let y = text_entry.position[1];
+        for (text_entry, buffer) in self.texts.iter().zip(buffers.iter()) {
+            let x = text_entry.position[0];
+            let y = text_entry.position[1];
 
-        //     let text_bounds = TextBounds {
-        //         left: 0,
-        //         top: 0,
-        //         right: self.size.width as i32,
-        //         bottom: self.size.height as i32,
-        //     };
+            let text_bounds = TextBounds {
+                left: 0,
+                top: 0,
+                right: self.size.width as i32,
+                bottom: self.size.height as i32,
+            };
 
-        //     let default_color = Color::rgba(
-        //         text_entry.color[0],
-        //         text_entry.color[1],
-        //         text_entry.color[2],
-        //         text_entry.color[3],
-        //     );
+            let default_color = Color::rgba(
+                text_entry.color[0],
+                text_entry.color[1],
+                text_entry.color[2],
+                text_entry.color[3],
+            );
 
-        //     text_areas.push(TextArea {
-        //         buffer,
-        //         left: x,
-        //         top: y,
-        //         scale: 1.0,
-        //         bounds: text_bounds,
-        //         default_color,
-        //         custom_glyphs: &[],
-        //     });
-        // }
+            text_areas.push(TextArea {
+                buffer,
+                left: x,
+                top: y,
+                scale: 1.0,
+                bounds: text_bounds,
+                default_color,
+                custom_glyphs: &[],
+            });
+        }
 
-        // let _ = self.text_renderer.prepare(
-        //     &self.device,
-        //     &self.queue,
-        //     &mut self.font_system,
-        //     &mut self.atlas,
-        //     &self.viewport,
-        //     text_areas,
-        //     &mut self.swash_cache,
-        // );
+        let _ = self.text_renderer.prepare(
+            &self.device,
+            &self.queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            text_areas,
+            &mut self.swash_cache,
+        );
 
         self.egui_renderer.begin_pass(&self.window);
 
@@ -868,21 +855,24 @@ impl WindowState {
                 });
 
         {
+            let encoder = encoder.borrow_mut();
             let mut render_pass =
-                encoder.begin_render_pass(&egui_wgpu::wgpu::RenderPassDescriptor {
-                    label: Some("Strokes Render Pass"),
-                    color_attachments: &[Some(egui_wgpu::wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: egui_wgpu::wgpu::Operations {
-                            load: egui_wgpu::wgpu::LoadOp::Clear(egui_wgpu::wgpu::Color::WHITE),
-                            store: egui_wgpu::wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
+                encoder
+                    .borrow_mut()
+                    .begin_render_pass(&egui_wgpu::wgpu::RenderPassDescriptor {
+                        label: Some("Strokes Render Pass"),
+                        color_attachments: &[Some(egui_wgpu::wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: egui_wgpu::wgpu::Operations {
+                                load: egui_wgpu::wgpu::LoadOp::Clear(egui_wgpu::wgpu::Color::WHITE),
+                                store: egui_wgpu::wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
 
             if let Some(rectangle_shader) = &self.rectangle_shader {
                 let mut temp_shapes = self.shapes.clone();
@@ -915,7 +905,7 @@ impl WindowState {
                         },
                     );
 
-                    render_pass.set_pipeline(&rectangle_shader);
+                    render_pass.set_pipeline(rectangle_shader);
                     render_pass.set_vertex_buffer(0, rectangle_vertex_buffer.slice(..));
                     render_pass.draw(0..flattened_shapes.len() as u32, 0..1);
                 }
@@ -929,33 +919,79 @@ impl WindowState {
                     0..1,
                 );
             }
+
+            let screen_descriptor = ScreenDescriptor {
+                size_in_pixels: [self.surface_config.width, self.surface_config.height],
+                pixels_per_point: (self.window.as_ref().scale_factor() * self.scale_factor) as f32,
+            };
+            let screen_descriptor = ScreenDescriptor {
+                size_in_pixels: [self.surface_config.width, self.surface_config.height],
+                pixels_per_point: (self.window.as_ref().scale_factor() * self.scale_factor) as f32,
+            };
+
+            self.egui_renderer.begin_pass(&self.window);
+
+            let header_height = (self.surface_config.height as f32 * 0.1) as f32;
+            let header_width = self.surface_config.width as f32;
+
+            egui::Area::new("Header".into())
+                .fixed_pos([0.0, 0.0])
+                .default_size([header_width, header_height])
+                .show(self.egui_renderer.context(), |ui| {
+                    ui.label("This is the header");
+                    ui.horizontal(|ui| {
+                        if ui.button("Button 1").clicked() {
+                            println!("Button 1 clicked");
+                        }
+                        if ui.button("Button 2").clicked() {
+                            println!("Button 2 clicked");
+                        }
+                    });
+                });
+
+            let mut encoder_egui =
+                self.device
+                    .create_command_encoder(&egui_wgpu::wgpu::CommandEncoderDescriptor {
+                        label: Some("Render Encoder"),
+                    });
+
+            self.egui_renderer.end_frame_and_draw(
+                &self.device,
+                &self.queue,
+                render_pass,
+                &mut encoder_egui,
+                &self.window,
+                &view,
+                screen_descriptor,
+            );
         }
 
         {
-            // let mut render_pass = encoder.begin_render_pass(&egui_wgpu::wgpu::RenderPassDescriptor {
-            //     label: Some("Text Render Pass"),
-            //     color_attachments: &[Some(egui_wgpu::wgpu::RenderPassColorAttachment {
-            //         view: &view,
-            //         resolve_target: None,
-            //         ops: egui_wgpu::wgpu::Operations {
-            //             load: egui_wgpu::wgpu::LoadOp::Load,
-            //             store: egui_wgpu::wgpu::StoreOp::Store,
-            //         },
-            //     })],
-            //     depth_stencil_attachment: None,
-            //     timestamp_writes: None,
-            //     occlusion_query_set: None,
-            // });
+            let mut render_pass =
+                encoder.begin_render_pass(&egui_wgpu::wgpu::RenderPassDescriptor {
+                    label: Some("Text Render Pass"),
+                    color_attachments: &[Some(egui_wgpu::wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: egui_wgpu::wgpu::Operations {
+                            load: egui_wgpu::wgpu::LoadOp::Load,
+                            store: egui_wgpu::wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
 
-            // self.text_renderer
-            //     .render(&self.atlas, &self.viewport, &mut render_pass)
-            //     .unwrap();
+            self.text_renderer
+                .render(&self.atlas, &self.viewport, &mut render_pass)
+                .unwrap();
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
-        // self.atlas.trim();
+        self.atlas.trim();
 
         Ok(())
     }
@@ -976,12 +1012,11 @@ impl ApplicationHandler for Application {
 
         const CURSOR_BLINK_INTERVAL: f32 = 0.5;
 
-        if state.start_typing {
-            if state.cursor_timer.elapsed().as_secs_f32() >= CURSOR_BLINK_INTERVAL {
-                state.cursor_visible = !state.cursor_visible;
-                state.cursor_timer = Instant::now();
-                state.window.request_redraw();
-            }
+        if state.start_typing && state.cursor_timer.elapsed().as_secs_f32() >= CURSOR_BLINK_INTERVAL
+        {
+            state.cursor_visible = !state.cursor_visible;
+            state.cursor_timer = Instant::now();
+            state.window.request_redraw();
         }
     }
 
@@ -1018,15 +1053,18 @@ impl ApplicationHandler for Application {
                 _ => {}
             }
         }
+        state
+            .egui_renderer
+            .handle_input(state.window.as_ref(), &event);
         match event {
             WindowEvent::RedrawRequested => {
-                // state.viewport.update(
-                //     &state.queue,
-                //     Resolution {
-                //         width: state.surface_config.width,
-                //         height: state.surface_config.height,
-                //     },
-                // );
+                state.viewport.update(
+                    &state.queue,
+                    Resolution {
+                        width: state.surface_config.width,
+                        height: state.surface_config.height,
+                    },
+                );
                 let _ = state.update();
                 match state.render() {
                     Ok(_) => {}
@@ -1042,12 +1080,12 @@ impl ApplicationHandler for Application {
 
                 const CURSOR_BLINK_INTERVAL: f32 = 0.5;
 
-                if state.start_typing {
-                    if state.cursor_timer.elapsed().as_secs_f32() >= CURSOR_BLINK_INTERVAL {
-                        state.cursor_visible = !state.cursor_visible;
-                        state.cursor_timer = Instant::now();
-                        state.window.request_redraw();
-                    }
+                if state.start_typing
+                    && state.cursor_timer.elapsed().as_secs_f32() >= CURSOR_BLINK_INTERVAL
+                {
+                    state.cursor_visible = !state.cursor_visible;
+                    state.cursor_timer = Instant::now();
+                    state.window.request_redraw();
                 }
             }
             _ => (),

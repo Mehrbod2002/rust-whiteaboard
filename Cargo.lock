@@ -859,10 +859,10 @@ dependencies = [
 [[package]]
 name = "glyphon"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36257cc8db90a3c90c500c283a0ca5a403da50fd2ae1db83bff06f7fecfbde7d"
+source = "git+https://github.com/mehrbod2002/glyphon?branch=egui-wgpu#5acba351a5cef174adf0ce0726f0a04f348fc5a5"
 dependencies = [
  "cosmic-text",
+ "egui-wgpu",
  "etagere",
  "lru",
  "rustc-hash 2.0.0",
