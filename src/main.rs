@@ -1,11 +1,12 @@
+#![allow(dead_code, unused_imports)]
 mod ui;
 use egui::{
-    color_picker, include_image, Color32, ColorImage, Context, Id, Image, ImageButton, ImageSource,
-    Response, TextureHandle, TextureId, Ui, Vec2,
+    color_picker, include_image, Align2, Color32, ColorImage, Context, Id, Image, ImageButton,
+    ImageSource, Pos2, Response, TextureHandle, TextureId, Ui, Vec2,
 };
 use egui_wgpu::{
     wgpu::{
-        self, util::DeviceExt, vertex_attr_array, CommandEncoderDescriptor, CompositeAlphaMode,
+        util::DeviceExt, vertex_attr_array, CommandEncoderDescriptor, CompositeAlphaMode,
         DeviceDescriptor, FragmentState, Instance, InstanceDescriptor, LoadOp, MultisampleState,
         Operations, PipelineCompilationOptions, PresentMode, PrimitiveState,
         RenderPassColorAttachment, RenderPassDescriptor, RequestAdapterOptions,
@@ -31,57 +32,19 @@ use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{ElementState, MouseButton, WindowEvent},
-    event_loop::{self, ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{self, ControlFlow, EventLoop},
     keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr},
-    window::{Window, WindowId},
+    window::Window,
 };
 
-pub struct AppState {
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
-    pub surface_config: wgpu::SurfaceConfiguration,
-    pub surface: wgpu::Surface<'static>,
-    pub scale_factor: f32,
-    pub egui_renderer: EguiRenderer,
+const PREV_ICON: &[u8; 928] = include_bytes!("assets/prev.svg");
+const SQUARE_ICON: &[u8; 928] = include_bytes!("assets/prev.svg");
 
-    pressed_keys: HashSet<Key>,
-    egui_rendererd: bool,
-    last_cursor_position: PhysicalPosition<f64>,
-    actions: Vec<Action>,
-    modifiers: ModifiersState,
-    size: PhysicalSize<u32>,
-
-    font_system: FontSystem,
-    swash_cache: SwashCache,
-    viewport: glyphon::Viewport,
-    texts: Vec<TextEntries>,
-    atlas: glyphon::TextAtlas,
-    text_renderer: glyphon::TextRenderer,
-    text_buffer: glyphon::Buffer,
-
-    mouse_pressed: bool,
-    strokes: Vec<Vec<Vertex>>,
-    current_stroke: Vec<Vertex>,
-    current_color: [f32; 4],
-
-    render_pipeline: egui_wgpu::wgpu::RenderPipeline,
-    rectangle_shader: Option<egui_wgpu::wgpu::RenderPipeline>,
-    vertex_buffer: egui_wgpu::wgpu::Buffer,
-    start_typing: bool,
-    shape_positions: Vec<Vertex>,
-    shapes: Vec<Rectangle>,
-    create_rect: bool,
-    cursor_visible: bool,
-    cursor_timer: Instant,
-    last_click_time: Option<Instant>,
-    last_click_position: Option<PhysicalPosition<f64>>,
-    editing_text_index: Option<usize>,
-    selection_vertex_buffer: Option<egui_wgpu::wgpu::Buffer>,
-
-    font_button: Option<Response>,
-    color_picker_button: Option<Response>,
-    sqaure_button: Option<Response>,
-    prev_button: Option<Response>,
+fn main() {
+    let event_loop = EventLoop::new().unwrap();
+    event_loop
+        .run_app(&mut Application { window_state: None })
+        .unwrap();
 }
 
 #[repr(C)]
@@ -182,64 +145,372 @@ enum Action {
     Shapes(Rectangle),
 }
 
-impl AppState {
-    async fn new(
-        instance: &wgpu::Instance,
-        surface: wgpu::Surface<'static>,
-        window: &Window,
-        width: u32,
-        height: u32,
-    ) -> Self {
+struct WindowState {
+    device: egui_wgpu::wgpu::Device,
+    pressed_keys: HashSet<Key>,
+    queue: egui_wgpu::wgpu::Queue,
+    show_modal_fonts: bool,
+    font_size: i32,
+    show_modal_colors: bool,
+    surface: egui_wgpu::wgpu::Surface<'static>,
+    surface_config: SurfaceConfiguration,
+    last_cursor_position: PhysicalPosition<f64>,
+    actions: Vec<Action>,
+    modifiers: ModifiersState,
+    scale_factor: f64,
+    egui_renderer: EguiRenderer,
+    size: PhysicalSize<u32>,
+
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    viewport: glyphon::Viewport,
+    texts: Vec<TextEntries>,
+    atlas: glyphon::TextAtlas,
+    text_renderer: glyphon::TextRenderer,
+    text_buffer: glyphon::Buffer,
+    window: Arc<Window>,
+
+    mouse_pressed: bool,
+    strokes: Vec<Vec<Vertex>>,
+    current_stroke: Vec<Vertex>,
+    current_color: [f32; 4],
+
+    render_pipeline: egui_wgpu::wgpu::RenderPipeline,
+    rectangle_shader: Option<egui_wgpu::wgpu::RenderPipeline>,
+    vertex_buffer: egui_wgpu::wgpu::Buffer,
+    start_typing: bool,
+    shape_positions: Vec<Vertex>,
+    shapes: Vec<Rectangle>,
+    create_rect: bool,
+    cursor_visible: bool,
+    cursor_timer: Instant,
+    last_click_time: Option<Instant>,
+    last_click_position: Option<PhysicalPosition<f64>>,
+    editing_text_index: Option<usize>,
+    selection_vertex_buffer: Option<egui_wgpu::wgpu::Buffer>,
+}
+
+impl WindowState {
+    fn input(&mut self, window: Arc<Window>, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::CursorMoved {
+                device_id: _,
+                position,
+            } => {
+                self.last_cursor_position = *position;
+
+                if self.mouse_pressed {
+                    let x = position.x as f32 / self.size.width as f32 * 2.0 - 1.0;
+                    let y = -(position.y as f32 / self.size.height as f32 * 2.0 - 1.0);
+                    if self.create_rect {
+                        if self.shape_positions.is_empty() {
+                            self.shape_positions.push(Vertex {
+                                position: [x, y],
+                                color: self.current_color,
+                            });
+                        } else {
+                            if self.shape_positions.len() > 1 {
+                                self.shape_positions.pop();
+                            }
+                            self.shape_positions.push(Vertex {
+                                position: [x, y],
+                                color: self.current_color,
+                            });
+                        }
+                    } else {
+                        self.current_stroke.push(Vertex {
+                            position: [x, y],
+                            color: self.current_color,
+                        });
+                    }
+
+                    window.request_redraw();
+                }
+                true
+            }
+            WindowEvent::MouseInput {
+                device_id: _,
+                state,
+                button,
+            } => {
+                if *button == MouseButton::Right && *state == ElementState::Pressed {
+                    let now = Instant::now();
+                    let position = self.last_cursor_position;
+
+                    let mut double_click_detected = false;
+
+                    if let Some(last_click_time) = self.last_click_time {
+                        if now.duration_since(last_click_time) <= DOUBLE_CLICK_THRESHOLD {
+                            if let Some(last_click_position) = self.last_click_position {
+                                let dx = position.x - last_click_position.x;
+                                let dy = position.y - last_click_position.y;
+                                let distance_squared = dx * dx + dy * dy;
+                                if distance_squared <= DOUBLE_CLICK_DISTANCE * DOUBLE_CLICK_DISTANCE
+                                {
+                                    double_click_detected = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if double_click_detected {
+                        for (i, text_entry) in self.texts.iter_mut().enumerate() {
+                            let bounds = &text_entry.bounds;
+                            if position.x >= bounds.x as f64
+                                && position.x <= (bounds.x + bounds.width) as f64
+                                && position.y >= bounds.y as f64
+                                && position.y <= (bounds.y + bounds.height) as f64
+                            {
+                                self.editing_text_index = Some(i);
+                                self.start_typing = true;
+                                text_entry.pending = true;
+                                window.request_redraw();
+
+                                break;
+                            }
+                        }
+                    }
+
+                    self.last_click_time = Some(now);
+                    self.last_click_position = Some(position);
+
+                    if self.start_typing && self.editing_text_index.is_none() {
+                        self.start_typing = false;
+                        if let Some(text) = self.texts.last_mut() {
+                            text.pending = false;
+                            self.actions.push(Action::Text(text.clone()));
+                        }
+                    } else {
+                        self.start_typing = true;
+                        self.texts
+                            .push(TextEntries::null(normalized_to_rgba(self.current_color)));
+                        let position = self.last_cursor_position;
+                        let x = position.x as f32;
+                        let y = position.y as f32;
+                        if let Some(text) = self.texts.last_mut() {
+                            text.position = [x, y];
+                        }
+                    }
+                }
+                if *button == MouseButton::Left {
+                    if *state == ElementState::Pressed {
+                        self.mouse_pressed = true;
+                        self.current_stroke = Vec::new();
+
+                        if self
+                            .pressed_keys
+                            .contains(&Key::Character(SmolStr::new("s")))
+                        {
+                            self.create_rect = true;
+                        }
+                    } else {
+                        self.mouse_pressed = false;
+                        if !self.current_stroke.is_empty() {
+                            self.strokes.push(self.current_stroke.clone());
+                            self.actions
+                                .push(Action::Stroke(self.current_stroke.clone()));
+                            self.current_stroke.clear();
+                        }
+                        self.create_rect = false;
+
+                        if let (Some(first), Some(last)) =
+                            (self.shape_positions.first(), self.shape_positions.last())
+                        {
+                            let rectangle = Rectangle {
+                                first: first.position,
+                                last: last.position,
+                                color: self.current_color,
+                            };
+
+                            self.actions.push(Action::Shapes(rectangle));
+                            self.shapes.push(rectangle);
+                        }
+
+                        self.shape_positions.clear();
+
+                        window.request_redraw();
+                    }
+                }
+                true
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                match event.state {
+                    ElementState::Pressed => {
+                        self.pressed_keys.insert(event.logical_key.clone());
+
+                        if self.start_typing || self.editing_text_index.is_some() {
+                            if let Some(text_input) = &event.text {
+                                if let Some(text) = self.texts.last_mut() {
+                                    if text.pending {
+                                        text.text.push_str(text_input);
+                                        window.request_redraw();
+                                    }
+                                }
+                            }
+                            if let Key::Named(key) = event.logical_key {
+                                match key {
+                                    NamedKey::Enter => {
+                                        self.start_typing = false;
+                                        self.editing_text_index = None;
+                                        if let Some(text) = self.texts.last_mut() {
+                                            text.pending = false;
+                                            self.actions.push(Action::Text(text.clone()));
+                                        }
+                                        window.request_redraw();
+                                    }
+                                    NamedKey::Delete => {
+                                        let text_entry =
+                                            if let Some(index) = self.editing_text_index {
+                                                self.texts.get_mut(index)
+                                            } else {
+                                                self.texts.last_mut()
+                                            };
+                                        if let Some(entry) = text_entry {
+                                            entry.text.pop();
+                                            window.request_redraw();
+                                        }
+                                    }
+                                    NamedKey::GoBack => {
+                                        self.start_typing = false;
+                                        self.editing_text_index = None;
+                                        if let Some(text) = self.texts.last_mut() {
+                                            text.pending = false;
+                                            self.actions.push(Action::Text(text.clone()));
+                                        }
+                                        window.request_redraw();
+                                    }
+                                    NamedKey::Backspace => {
+                                        if self.editing_text_index.is_some() {
+                                            let editing_text = self.texts
+                                                [self.editing_text_index.unwrap()]
+                                            .borrow_mut();
+                                            if editing_text.pending
+                                                && editing_text.text.chars().count() > 1
+                                            {
+                                                editing_text.text = editing_text
+                                                    .text
+                                                    .chars()
+                                                    .take(editing_text.text.chars().count() - 2)
+                                                    .collect();
+                                                window.request_redraw();
+                                            }
+                                        } else if let Some(text) = self.texts.last_mut() {
+                                            if text.pending && text.text.chars().count() > 1 {
+                                                text.text = text
+                                                    .text
+                                                    .chars()
+                                                    .take(text.text.chars().count() - 2)
+                                                    .collect();
+                                                window.request_redraw();
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        } else {
+                            if self.pressed_keys.contains(&Key::Named(NamedKey::Control))
+                                && self
+                                    .pressed_keys
+                                    .contains(&Key::Character("z".to_string().into()))
+                            {
+                                if let Some(action) = self.actions.pop() {
+                                    match action {
+                                        Action::Stroke(_) => {
+                                            self.strokes.pop();
+                                        }
+                                        Action::Text(_) => {
+                                            self.texts.pop();
+                                        }
+                                        Action::Shapes(_) => {
+                                            self.shapes.pop();
+                                        }
+                                    }
+                                }
+                                window.request_redraw();
+                                return true;
+                            }
+                            if let Some(ref text) = event.text {
+                                match text.as_str() {
+                                    "1" => self.current_color = [1.0, 0.0, 0.0, 1.0], // Red
+                                    "2" => self.current_color = [0.0, 1.0, 0.0, 1.0], // Green
+                                    "3" => self.current_color = [0.0, 0.0, 1.0, 1.0], // Blue
+                                    "4" => self.current_color = [1.0, 1.0, 0.0, 1.0], // Yellow
+                                    "5" => self.current_color = [1.0, 0.0, 1.0, 1.0], // Magenta
+                                    "6" => self.current_color = [0.0, 1.0, 1.0, 1.0], // Cyan
+                                    "7" => self.current_color = [0.0, 0.0, 0.0, 1.0], // Black
+                                    "8" => self.current_color = [1.0, 1.0, 1.0, 1.0], // White
+                                    _ => (),
+                                }
+                            }
+                        }
+                    }
+                    ElementState::Released => {
+                        self.pressed_keys.remove(&event.logical_key);
+                        self.create_rect = false;
+
+                        if let (Some(first), Some(last)) =
+                            (self.shape_positions.first(), self.shape_positions.last())
+                        {
+                            let rectangle = Rectangle {
+                                first: first.position,
+                                last: last.position,
+                                color: self.current_color,
+                            };
+
+                            self.actions.push(Action::Shapes(rectangle));
+                            self.shapes.push(rectangle);
+                        }
+
+                        self.shape_positions.clear();
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    async fn new(window: Arc<Window>) -> Self {
         let physical_size = window.inner_size();
         let scale_factor = window.scale_factor();
-        let power_pref = wgpu::PowerPreference::default();
+
+        let instance = Instance::new(InstanceDescriptor::default());
+        let surface = instance
+            .create_surface(window.clone())
+            .expect("Create surface");
+
         let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: power_pref,
-                force_fallback_adapter: false,
+            .request_adapter(&RequestAdapterOptions {
                 compatible_surface: Some(&surface),
+                ..Default::default()
             })
             .await
-            .expect("Failed to find an appropriate adapter");
-
-        let features = wgpu::Features::empty();
+            .unwrap();
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: features,
-                    required_limits: Default::default(),
-                    memory_hints: Default::default(),
-                },
-                None,
-            )
+            .request_device(&DeviceDescriptor::default(), None)
             .await
-            .expect("Failed to create device");
+            .unwrap();
 
-        let swapchain_capabilities = surface.get_capabilities(&adapter);
-        let selected_format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let swapchain_format = swapchain_capabilities
-            .formats
-            .iter()
-            .find(|d| **d == selected_format)
-            .expect("failed to select proper surface texture format!");
-
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: *swapchain_format,
-            width,
-            height,
-            present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 0,
-            alpha_mode: swapchain_capabilities.alpha_modes[0],
+        let swapchain_format = TextureFormat::Bgra8UnormSrgb;
+        let surface_config = SurfaceConfiguration {
+            usage: TextureUsages::RENDER_ATTACHMENT,
+            format: swapchain_format,
+            width: physical_size.width,
+            height: (physical_size.height as f32 * 0.8) as u32,
+            present_mode: PresentMode::Fifo,
+            alpha_mode: CompositeAlphaMode::Opaque,
             view_formats: vec![],
+            desired_maximum_frame_latency: 2,
         };
+        let egui_renderer = EguiRenderer::new(&device, surface_config.format, None, 1, &window);
+        surface.configure(&device, &surface_config);
 
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let cache = Cache::new(&device);
         let viewport = Viewport::new(&device, &cache);
-        let mut atlas = TextAtlas::new(&device, &queue, &cache, *swapchain_format);
+        let mut atlas = TextAtlas::new(&device, &queue, &cache, swapchain_format);
         let text_renderer =
             TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
         let mut text_buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
@@ -254,11 +525,10 @@ impl AppState {
         );
         text_buffer.shape_until_scroll(&mut font_system, false);
 
-        surface.configure(&device, &surface_config);
-
-        let egui_renderer = EguiRenderer::new(&device, surface_config.format, None, 1, &window);
-
-        let scale_factor = 1.0;
+        let shader = device.create_shader_module(egui_wgpu::wgpu::ShaderModuleDescriptor {
+            label: Some("Shader"),
+            source: egui_wgpu::wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        });
 
         let pipeline_layout =
             device.create_pipeline_layout(&egui_wgpu::wgpu::PipelineLayoutDescriptor {
@@ -318,10 +588,6 @@ impl AppState {
                 cache: None,
             });
 
-        let shader = device.create_shader_module(egui_wgpu::wgpu::ShaderModuleDescriptor {
-            label: Some("Shader"),
-            source: egui_wgpu::wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
-        });
         let render_pipeline =
             device.create_render_pipeline(&egui_wgpu::wgpu::RenderPipelineDescriptor {
                 label: Some("Render Pipeline"),
@@ -369,12 +635,11 @@ impl AppState {
                     | egui_wgpu::wgpu::BufferUsages::COPY_DST,
             });
 
-        Self {
+        let mut render_self = Self {
             device,
             shapes: Vec::new(),
             last_cursor_position: PhysicalPosition::new(0.0, 0.0),
             queue,
-            egui_rendererd: false,
             scale_factor,
             surface,
             actions: Vec::new(),
@@ -382,6 +647,7 @@ impl AppState {
             pressed_keys: HashSet::new(),
             surface_config,
             font_system,
+            font_size: 16,
             swash_cache,
             viewport,
             atlas,
@@ -389,6 +655,7 @@ impl AppState {
             text_buffer,
             texts: Vec::new(),
             create_rect: false,
+            window,
             size: physical_size,
             mouse_pressed: false,
             render_pipeline,
@@ -406,141 +673,35 @@ impl AppState {
             rectangle_shader: Some(rectangle_shader),
             shape_positions: Vec::new(),
             egui_renderer,
-            prev_button: None,
-            font_button: None,
-            color_picker_button: None,
-            sqaure_button: None,
-        }
-    }
-
-    fn resize_surface(&mut self, width: u32, height: u32) {
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
-    }
-}
-
-pub struct App {
-    instance: wgpu::Instance,
-    state: Option<AppState>,
-    window: Option<Arc<Window>>,
-}
-
-impl App {
-    pub fn new() -> Self {
-        let instance = egui_wgpu::wgpu::Instance::new(wgpu::InstanceDescriptor::default());
-        Self {
-            instance,
-            state: None,
-            window: None,
-        }
-    }
-
-    async fn set_window(&mut self, window: Window) {
-        let window = Arc::new(window);
-        let initial_width = 1360;
-        let initial_height = 768;
-
-        let _ = window.request_inner_size(PhysicalSize::new(initial_width, initial_height));
-
-        let surface = self
-            .instance
-            .create_surface(window.clone())
-            .expect("Failed to create surface!");
-
-        let state = AppState::new(
-            &self.instance,
-            surface,
-            &window,
-            initial_width,
-            initial_width,
-        )
-        .await;
-
-        self.window.get_or_insert(window);
-        self.state.get_or_insert(state);
-    }
-
-    fn handle_resized(&mut self, width: u32, height: u32) {
-        self.state.as_mut().unwrap().resize_surface(width, height);
-    }
-
-    fn handle_redraw(&mut self) {
-        let state = self.state.as_mut().unwrap();
-
-        let screen_descriptor = ScreenDescriptor {
-            size_in_pixels: [state.surface_config.width, state.surface_config.height],
-            pixels_per_point: self.window.as_ref().unwrap().scale_factor() as f32
-                * state.scale_factor,
+            show_modal_fonts: false,
+            show_modal_colors: false,
         };
 
-        let surface_texture = state
-            .surface
-            .get_current_texture()
-            .expect("Failed to acquire next swap chain texture");
-
-        let surface_view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = state
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        let window = self.window.as_ref().unwrap();
-
-        {
-            state.egui_renderer.begin_frame(window);
-
-            egui::Window::new("winit + egui + wgpu says hello!")
-                .resizable(true)
-                .vscroll(true)
-                .default_open(false)
-                .show(state.egui_renderer.context(), |ui| {
-                    ui.label("Label!");
-
-                    if ui.button("Button!").clicked() {
-                        println!("boom!")
-                    }
-
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "Pixels per point: {}",
-                            state.egui_renderer.context().pixels_per_point()
-                        ));
-                        if ui.button("-").clicked() {
-                            state.scale_factor = (state.scale_factor - 0.1).max(0.3);
-                        }
-                        if ui.button("+").clicked() {
-                            state.scale_factor = (state.scale_factor + 0.1).min(3.0);
-                        }
-                    });
-                });
-
-            state.egui_renderer.end_frame_and_draw(
-                &state.device,
-                &state.queue,
-                &mut encoder,
-                window,
-                &surface_view,
-                screen_descriptor,
-            );
-        }
-
-        state.queue.submit(Some(encoder.finish()));
-        surface_texture.present();
+        let _ = Self::render(&mut render_self);
+        render_self
     }
 
-    fn update(&mut self) -> bool {
+    fn set_font_modal(&mut self) {
+        self.show_modal_fonts = false;
+    }
+
+    fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        if new_size.width > 0 && new_size.height > 0 {
+            self.size = new_size;
+            self.surface_config.width = self.size.width;
+            self.surface_config.height = self.size.height;
+            self.surface.configure(&self.device, &self.surface_config);
+
+            let _ = self.render();
+        }
+    }
+
+    fn update(&mut self) -> Result<(), egui_wgpu::wgpu::SurfaceError> {
         let buffers: Vec<glyphon::Buffer> = Vec::new();
         let mut text_areas: Vec<TextArea> = Vec::new();
         let mut all_vertices = Vec::new();
-        let Some(state) = &mut self.state else {
-            return false;
-        };
 
-        state.actions.iter().for_each(|x| {
+        self.actions.iter().for_each(|x| {
             if let Action::Stroke(stroke) = x {
                 if stroke.len() >= 2 {
                     for i in 0..(stroke.len() - 1) {
@@ -553,19 +714,16 @@ impl App {
 
         const CURSOR_BLINK_INTERVAL: f32 = 0.5;
 
-        if state.start_typing {
-            let elapsed = state.cursor_timer.elapsed().as_secs_f32();
+        if self.start_typing {
+            let elapsed = self.cursor_timer.elapsed().as_secs_f32();
             if elapsed >= CURSOR_BLINK_INTERVAL {
-                state.cursor_visible = !state.cursor_visible;
-                state.cursor_timer = Instant::now();
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
+                self.cursor_visible = !self.cursor_visible;
+                self.cursor_timer = Instant::now();
+                self.window.request_redraw();
             }
         }
 
-        for (index, (text_entry, buffer)) in state.texts.iter_mut().zip(buffers.iter()).enumerate()
-        {
+        for (index, (text_entry, buffer)) in self.texts.iter_mut().zip(buffers.iter()).enumerate() {
             let x = text_entry.position[0];
             let y = text_entry.position[1];
 
@@ -601,12 +759,12 @@ impl App {
             let text_bounds = TextBounds {
                 left: 0,
                 top: 0,
-                right: state.size.width as i32,
-                bottom: state.size.height as i32,
+                right: self.size.width as i32,
+                bottom: self.size.height as i32,
             };
 
-            let normalized_color = normalized_to_rgba(state.current_color);
-            let default_color = if Some(index) == state.editing_text_index {
+            let normalized_color = normalized_to_rgba(self.current_color);
+            let default_color = if Some(index) == self.editing_text_index {
                 Color::rgb(0, 0, 255)
             } else {
                 Color::rgba(
@@ -628,37 +786,44 @@ impl App {
             });
         }
 
-        if state.current_stroke.len() >= 2 {
-            for i in 0..(state.current_stroke.len() - 1) {
-                all_vertices.push(state.current_stroke[i]);
-                all_vertices.push(state.current_stroke[i + 1]);
+        let _ = self.text_renderer.prepare(
+            &self.device,
+            &self.queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            text_areas,
+            &mut self.swash_cache,
+        );
+
+        if self.current_stroke.len() >= 2 {
+            for i in 0..(self.current_stroke.len() - 1) {
+                all_vertices.push(self.current_stroke[i]);
+                all_vertices.push(self.current_stroke[i + 1]);
             }
         }
 
-        if !all_vertices.is_empty() {
-            let vertex_data = bytemuck::cast_slice(&all_vertices);
-            state.vertex_buffer =
-                state
-                    .device
-                    .create_buffer_init(&egui_wgpu::wgpu::util::BufferInitDescriptor {
-                        label: Some("Vertex Buffer"),
-                        contents: vertex_data,
-                        usage: egui_wgpu::wgpu::BufferUsages::VERTEX
-                            | egui_wgpu::wgpu::BufferUsages::COPY_DST,
-                    });
-        }
+        let vertex_data = bytemuck::cast_slice(&all_vertices);
+        self.vertex_buffer =
+            self.device
+                .create_buffer_init(&egui_wgpu::wgpu::util::BufferInitDescriptor {
+                    label: Some("Vertex Buffer"),
+                    contents: vertex_data,
+                    usage: egui_wgpu::wgpu::BufferUsages::VERTEX
+                        | egui_wgpu::wgpu::BufferUsages::COPY_DST,
+                });
 
         let mut buffers: Vec<glyphon::Buffer> = Vec::new();
 
-        for text_entry in state.texts.iter() {
-            let mut buffer = state.text_buffer.clone();
+        for text_entry in self.texts.iter() {
+            let mut buffer = self.text_buffer.clone();
             let mut text = text_entry.text.clone();
-            if text_entry.pending && state.cursor_visible {
+            if text_entry.pending && self.cursor_visible {
                 text.push('|');
             }
 
             buffer.set_text(
-                &mut state.font_system,
+                &mut self.font_system,
                 &text,
                 Attrs::new().family(Family::SansSerif),
                 Shaping::Advanced,
@@ -669,15 +834,15 @@ impl App {
 
         let mut text_areas: Vec<TextArea> = Vec::new();
 
-        for (text_entry, buffer) in state.texts.iter().zip(buffers.iter()) {
+        for (text_entry, buffer) in self.texts.iter().zip(buffers.iter()) {
             let x = text_entry.position[0];
             let y = text_entry.position[1];
 
             let text_bounds = TextBounds {
                 left: 0,
                 top: 0,
-                right: state.size.width as i32,
-                bottom: state.size.height as i32,
+                right: self.size.width as i32,
+                bottom: self.size.height as i32,
             };
 
             let default_color = Color::rgba(
@@ -698,83 +863,345 @@ impl App {
             });
         }
 
-        let _ = state.text_renderer.prepare(
-            &state.device,
-            &state.queue,
-            &mut state.font_system,
-            &mut state.atlas,
-            &state.viewport,
+        let _ = self.text_renderer.prepare(
+            &self.device,
+            &self.queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
             text_areas,
-            &mut state.swash_cache,
+            &mut self.swash_cache,
         );
 
-        if let Some(window) = &self.window {
-            state.egui_renderer.begin_frame(&window);
-        }
-
-        true
-    }
-}
-
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window = event_loop
-            .create_window(Window::default_attributes())
-            .unwrap();
-        pollster::block_on(self.set_window(window));
+        Ok(())
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+    fn render(&mut self) -> Result<(), egui_wgpu::wgpu::SurfaceError> {
+        let output = self.surface.get_current_texture()?;
+        let view = output
+            .texture
+            .create_view(&egui_wgpu::wgpu::TextureViewDescriptor::default());
+
+        let mut encoder =
+            self.device
+                .create_command_encoder(&egui_wgpu::wgpu::CommandEncoderDescriptor {
+                    label: Some("Render Encoder"),
+                });
+
         {
-            let state = self.state.as_mut().unwrap();
+            let encoder = encoder.borrow_mut();
+            let mut render_pass =
+                encoder
+                    .borrow_mut()
+                    .begin_render_pass(&egui_wgpu::wgpu::RenderPassDescriptor {
+                        label: Some("Strokes Render Pass"),
+                        color_attachments: &[Some(egui_wgpu::wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: egui_wgpu::wgpu::Operations {
+                                load: egui_wgpu::wgpu::LoadOp::Clear(egui_wgpu::wgpu::Color::WHITE),
+                                store: egui_wgpu::wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
 
-            state
-                .egui_renderer
-                .handle_input(self.window.as_ref().unwrap(), &event);
+            if let Some(rectangle_shader) = &self.rectangle_shader {
+                let mut temp_shapes = self.shapes.clone();
 
-            match event {
-                WindowEvent::CloseRequested => {
-                    println!("The close button was pressed; stopping");
-                    event_loop.exit();
+                if self.create_rect {
+                    if let (Some(first), Some(last)) =
+                        (&self.shape_positions.first(), &self.shape_positions.last())
+                    {
+                        let rectangle = Rectangle {
+                            first: first.position,
+                            last: last.position,
+                            color: self.current_color,
+                        };
+
+                        temp_shapes.push(rectangle);
+                    }
                 }
-                WindowEvent::RedrawRequested => {
-                    state.viewport.update(
-                        &state.queue,
-                        Resolution {
-                            width: state.surface_config.width,
-                            height: (state.surface_config.height as f32 * 0.8) as u32,
-                        },
-                    );
-                    // let _ = self.update();
 
-                    self.handle_redraw();
+                let flattened_shapes: Vec<_> = temp_shapes
+                    .iter()
+                    .flat_map(|rect| rect.to_vertices())
+                    .collect();
 
-                    self.window.as_ref().unwrap().request_redraw();
-                }
-                WindowEvent::Resized(new_size) => {
-                    self.handle_resized(new_size.width, new_size.height);
-                }
-                _ => (),
+                let rectangle_vertex_buffer =
+                    self.device
+                        .create_buffer_init(&egui_wgpu::wgpu::util::BufferInitDescriptor {
+                            label: Some("Rectangle Vertex Buffer"),
+                            contents: bytemuck::cast_slice(&flattened_shapes),
+                            usage: egui_wgpu::wgpu::BufferUsages::VERTEX,
+                        });
+
+                render_pass.set_pipeline(rectangle_shader);
+                render_pass.set_vertex_buffer(0, rectangle_vertex_buffer.slice(..));
+                render_pass.draw(0..flattened_shapes.len() as u32, 0..1);
+            }
+
+            if self.vertex_buffer.size() > 0 {
+                render_pass.set_pipeline(&self.render_pipeline);
+                render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                render_pass.draw(
+                    0..(self.vertex_buffer.size() as u32 / std::mem::size_of::<Vertex>() as u32),
+                    0..1,
+                );
             }
         }
+
+        let screen_descriptor = ScreenDescriptor {
+            size_in_pixels: [
+                self.surface_config.width,
+                (self.surface_config.height as f32 * 0.2) as u32,
+            ],
+            pixels_per_point: (self.window.as_ref().scale_factor() * self.scale_factor) as f32,
+        };
+        self.egui_renderer.begin_frame(&self.window);
+
+        let header_height = self.surface_config.height as f32;
+        let header_width = (self.surface_config.width as f64 * self.scale_factor) as f32;
+
+        let menu_color = egui::Color32::from_hex("#5C5C5C").expect("unable to get color");
+
+        let sized = vec![10, 12, 14, 16, 18, 20, 24, 28, 32];
+        let mut modal_fonts = self.show_modal_fonts;
+        egui::Window::new("")
+            .collapsible(false)
+            .title_bar(true)
+            .open(&mut modal_fonts)
+            .resizable(false)
+            .fixed_pos(Pos2 { x: 0.0, y: 10.0 })
+            .movable(false)
+            .min_height(header_height * 2.0)
+            .anchor(Align2::CENTER_TOP, [0.0, 0.0])
+            .show(self.egui_renderer.context(), |ui| {
+                ui.horizontal(|ui| {
+                    for size in sized {
+                        if ui.button(format!("{} px", size)).clicked() {
+                            self.font_size = size;
+                            self.window.request_redraw();
+                        }
+                    }
+                });
+            });
+
+        self.show_modal_fonts = modal_fonts;
+
+        egui::Area::new("Header".into())
+            .fixed_pos([0.0, 0.0])
+            .movable(false)
+            .default_size([header_width, header_height * 10.0])
+            .show(self.egui_renderer.context(), |ui| {
+                let custom_frame = egui::Frame::none()
+                    .fill(menu_color)
+                    .stroke(egui::Stroke::new(1.0, menu_color));
+                custom_frame.show(ui, |ui| {
+                    ui.set_min_width(header_width);
+                    ui.vertical(|ui| {
+                        ui.add_space(5.0);
+                        ui.horizontal(|ui| {
+                            ui.set_width(header_width);
+
+                            ui.add_space(header_width * 0.18);
+                            let prev =
+                                ImageButton::new(Image::new(include_image!("assets/prev.png")))
+                                    .tint(menu_color);
+                            let prev_button = ui.add(prev);
+                            if prev_button.clicked() {
+                                if let Some(action) = self.actions.pop() {
+                                    match action {
+                                        Action::Stroke(_) => {
+                                            self.strokes.pop();
+                                        }
+                                        Action::Text(_) => {
+                                            self.texts.pop();
+                                        }
+                                        Action::Shapes(_) => {
+                                            self.shapes.pop();
+                                        }
+                                    }
+                                }
+                                self.window.request_redraw();
+                            }
+                            ui.add_space(header_width * 0.03);
+
+                            let sqaure =
+                                ImageButton::new(Image::new(include_image!("assets/prev.png")))
+                                    .tint(menu_color);
+                            let sqaure_button = ui.add(sqaure);
+                            if sqaure_button.clicked() {
+                                self.create_rect = true;
+                            }
+                            ui.add_space(header_width * 0.03);
+
+                            let font =
+                                ImageButton::new(Image::new(include_image!("assets/prev.png")))
+                                    .tint(menu_color);
+                            let font_button = ui.add(font);
+                            if font_button.clicked() {
+                                if self.show_modal_fonts {
+                                    self.show_modal_fonts = false
+                                } else {
+                                    self.show_modal_fonts = true
+                                };
+                            }
+
+                            ui.add_space(header_width * 0.03);
+
+                            let color_picker =
+                                ImageButton::new(Image::new(include_image!("assets/prev.png")))
+                                    .tint(menu_color);
+                            let color_picker_button = ui.add(color_picker);
+                        });
+
+                        ui.add_space(5.0);
+                    });
+                });
+            });
+
+        self.egui_renderer.end_frame_and_draw(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &self.window,
+            &view,
+            screen_descriptor,
+        );
+
+        {
+            let mut render_pass =
+                encoder.begin_render_pass(&egui_wgpu::wgpu::RenderPassDescriptor {
+                    label: Some("Text Render Pass"),
+                    color_attachments: &[Some(egui_wgpu::wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: egui_wgpu::wgpu::Operations {
+                            load: egui_wgpu::wgpu::LoadOp::Load,
+                            store: egui_wgpu::wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+            self.text_renderer
+                .render(&self.atlas, &self.viewport, &mut render_pass)
+                .unwrap();
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+
+        self.atlas.trim();
+
+        Ok(())
     }
 }
 
-fn main() {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        pollster::block_on(run());
-    }
+struct Application {
+    window_state: Option<WindowState>,
 }
 
-async fn run() {
-    let event_loop = EventLoop::new().unwrap();
+const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
+const DOUBLE_CLICK_DISTANCE: f64 = 5.0;
 
-    event_loop.set_control_flow(ControlFlow::Poll);
+impl ApplicationHandler for Application {
+    fn about_to_wait(&mut self, _: &event_loop::ActiveEventLoop) {
+        let Some(state) = &mut self.window_state else {
+            return;
+        };
 
-    let mut app = App::new();
+        const CURSOR_BLINK_INTERVAL: f32 = 0.5;
 
-    event_loop.run_app(&mut app).expect("Failed to run app");
+        if state.start_typing && state.cursor_timer.elapsed().as_secs_f32() >= CURSOR_BLINK_INTERVAL
+        {
+            state.cursor_visible = !state.cursor_visible;
+            state.cursor_timer = Instant::now();
+            state.window.request_redraw();
+        }
+    }
+
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        if self.window_state.is_some() {
+            return;
+        }
+
+        let (width, height) = (800, 600);
+        let window_attributes = Window::default_attributes()
+            .with_inner_size(LogicalSize::new(width as f64, height as f64))
+            .with_title("glyphon hello world");
+        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+
+        self.window_state = Some(pollster::block_on(WindowState::new(window)));
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        // event_loop.set_control_flow(ControlFlow::Poll);
+        let Some(state) = &mut self.window_state else {
+            return;
+        };
+
+        let window = &state.window;
+        if !state.input(window.clone(), &event) {
+            match event {
+                WindowEvent::CloseRequested => event_loop.exit(),
+                WindowEvent::Resized(size) => {
+                    state.resize(size);
+                }
+                _ => {}
+            }
+        }
+        if state
+            .egui_renderer
+            .handle_input(state.window.as_ref(), &event)
+        {
+            return;
+        }
+        match event {
+            WindowEvent::RedrawRequested => {
+                state.viewport.update(
+                    &state.queue,
+                    Resolution {
+                        width: state.surface_config.width,
+                        height: (state.surface_config.height as f32 * 0.8) as u32,
+                    },
+                );
+                let _ = state.update();
+                match state.render() {
+                    Ok(_) => {}
+                    Err(egui_wgpu::wgpu::SurfaceError::Lost) => state.resize(state.size),
+                    Err(egui_wgpu::wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
+                    Err(e) => eprintln!("{:?}", e),
+                }
+            }
+            WindowEvent::Focused(_) => {
+                let Some(state) = &mut self.window_state else {
+                    return;
+                };
+
+                const CURSOR_BLINK_INTERVAL: f32 = 0.5;
+
+                if state.start_typing
+                    && state.cursor_timer.elapsed().as_secs_f32() >= CURSOR_BLINK_INTERVAL
+                {
+                    state.cursor_visible = !state.cursor_visible;
+                    state.cursor_timer = Instant::now();
+                    state.window.request_redraw();
+                }
+            }
+            _ => (),
+        }
+    }
 }
 
 fn normalized_to_rgba(normalized: [f32; 4]) -> [u8; 4] {
@@ -783,4 +1210,46 @@ fn normalized_to_rgba(normalized: [f32; 4]) -> [u8; 4] {
     let blue = (normalized[2] * 255.0) as u8;
     let alpha = (normalized[3] * 255.0) as u8;
     [red, green, blue, alpha]
+}
+
+fn color_picker_popup(ui: &mut Ui, current_color: &mut Color32) {
+    let colors = [
+        ("Red", Color32::from_rgb(255, 0, 0)),
+        ("Green", Color32::from_rgb(0, 255, 0)),
+        ("Blue", Color32::from_rgb(0, 0, 255)),
+        ("Yellow", Color32::from_rgb(255, 255, 0)),
+        ("Black", Color32::from_rgb(0, 0, 0)),
+        ("White", Color32::from_rgb(255, 255, 255)),
+    ];
+
+    ui.label("Pick a color:");
+    for (name, color) in colors.iter() {
+        if ui
+            .selectable_label(*current_color == *color, *name)
+            .clicked()
+        {
+            *current_color = *color;
+            ui.close_menu();
+        }
+    }
+}
+
+fn load_svg_to_texture<'a>(ctx: &'a Context, svg_data: &'a [u8]) -> ImageButton<'a> {
+    let tree = usvg::Tree::from_data(svg_data, &usvg::Options::default()).unwrap();
+
+    let image = ColorImage::new(
+        [tree.size().width() as usize, tree.size().height() as usize],
+        egui::Color32::WHITE,
+    );
+    let mut pixmap =
+        Pixmap::new(tree.size().width() as u32, tree.size().height() as u32).expect("unable");
+    resvg::render(
+        &tree,
+        resvg::usvg::Transform::identity(),
+        &mut pixmap.as_mut(),
+    );
+
+    let texture = ctx.load_texture("svg_texture", image, Default::default());
+
+    egui::ImageButton::new(&texture)
 }

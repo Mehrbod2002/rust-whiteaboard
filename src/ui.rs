@@ -48,8 +48,8 @@ impl EguiRenderer {
         }
     }
 
-    pub fn handle_input(&mut self, window: &Window, event: &WindowEvent) {
-        let _ = self.state.on_window_event(window, event);
+    pub fn handle_input(&mut self, window: &Window, event: &WindowEvent) -> bool {
+        self.state.on_window_event(window, event).consumed
     }
 
     pub fn ppp(&mut self, v: f32) {
