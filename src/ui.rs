@@ -21,6 +21,9 @@ impl EguiRenderer {
         masa_sample: u32,
     ) -> Self {
         let egui_context = egui::Context::default();
+
+        let fonts = egui::FontDefinitions::default();
+        egui_context.set_fonts(fonts);
         let state = egui_winit::State::new(
             egui_context,
             ViewportId::ROOT,

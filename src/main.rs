@@ -1,5 +1,6 @@
 #![allow(dead_code, unused_imports)]
 mod ui;
+use egui::{Color32, Ui, Vec2};
 use egui_wgpu::{
     wgpu::{
         util::DeviceExt, vertex_attr_array, CommandEncoderDescriptor, CompositeAlphaMode,
@@ -140,6 +141,7 @@ enum Action {
 struct WindowState {
     device: egui_wgpu::wgpu::Device,
     pressed_keys: HashSet<Key>,
+    egui_rendererd: bool,
     queue: egui_wgpu::wgpu::Queue,
     surface: egui_wgpu::wgpu::Surface<'static>,
     surface_config: SurfaceConfiguration,
@@ -356,7 +358,9 @@ impl WindowState {
                                             let editing_text = self.texts
                                                 [self.editing_text_index.unwrap()]
                                             .borrow_mut();
-                                            if editing_text.pending && editing_text.text.chars().count() > 1 {
+                                            if editing_text.pending
+                                                && editing_text.text.chars().count() > 1
+                                            {
                                                 editing_text.text = editing_text
                                                     .text
                                                     .chars()
@@ -467,7 +471,7 @@ impl WindowState {
             usage: TextureUsages::RENDER_ATTACHMENT,
             format: swapchain_format,
             width: physical_size.width,
-            height: physical_size.height,
+            height: (physical_size.height as f32 * 0.8) as u32,
             present_mode: PresentMode::Fifo,
             alpha_mode: CompositeAlphaMode::Opaque,
             view_formats: vec![],
@@ -605,11 +609,12 @@ impl WindowState {
                     | egui_wgpu::wgpu::BufferUsages::COPY_DST,
             });
 
-        Self {
+        let mut render_self = Self {
             device,
             shapes: Vec::new(),
             last_cursor_position: PhysicalPosition::new(0.0, 0.0),
             queue,
+            egui_rendererd: false,
             scale_factor,
             surface,
             actions: Vec::new(),
@@ -642,7 +647,10 @@ impl WindowState {
             rectangle_shader: Some(rectangle_shader),
             shape_positions: Vec::new(),
             egui_renderer,
-        }
+        };
+
+        let _ = Self::render(&mut render_self);
+        render_self
     }
 
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -917,27 +925,43 @@ impl WindowState {
             }
 
             let screen_descriptor = ScreenDescriptor {
-                size_in_pixels: [self.surface_config.width, self.surface_config.height],
+                size_in_pixels: [
+                    self.surface_config.width,
+                    (self.surface_config.height as f32 * 0.2) as u32,
+                ],
                 pixels_per_point: (self.window.as_ref().scale_factor() * self.scale_factor) as f32,
             };
 
             self.egui_renderer.begin_pass(&self.window);
 
-            let header_height = self.surface_config.height as f32 * 0.1;
+            let header_height = self.surface_config.height as f32 * 0.2;
             let header_width = self.surface_config.width as f32;
 
+            let menu_color = egui::Color32::from_hex("#5C5C5C").expect("unable to get color");
             egui::Area::new("Header".into())
                 .fixed_pos([0.0, 0.0])
+                .movable(false)
                 .default_size([header_width, header_height])
                 .show(self.egui_renderer.context(), |ui| {
-                    ui.label("This is the header");
-                    ui.horizontal(|ui| {
-                        if ui.button("Button 1").clicked() {
-                            println!("Button 1 clicked");
-                        }
-                        if ui.button("Button 2").clicked() {
-                            println!("Button 2 clicked");
-                        }
+                    let custom_frame = egui::Frame::none()
+                        .fill(menu_color)
+                        .stroke(egui::Stroke::new(1.0, menu_color));
+                    custom_frame.show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            ui.add_space(5.0);
+                            ui.horizontal(|ui| {
+                                ui.set_width(ui.available_width());
+
+                                ui.add_space(ui.available_width() * 0.18);
+                                for _ in 0..5 {
+                                    if ui.button("Settings").clicked() {
+                                        println!("Settings clicked");
+                                    }
+                                }
+                            });
+
+                            ui.add_space(5.0);
+                        });
                     });
                 });
 
@@ -1054,7 +1078,7 @@ impl ApplicationHandler for Application {
                     &state.queue,
                     Resolution {
                         width: state.surface_config.width,
-                        height: state.surface_config.height,
+                        height: (state.surface_config.height as f32 * 0.8) as u32,
                     },
                 );
                 let _ = state.update();
@@ -1091,4 +1115,49 @@ fn normalized_to_rgba(normalized: [f32; 4]) -> [u8; 4] {
     let blue = (normalized[2] * 255.0) as u8;
     let alpha = (normalized[3] * 255.0) as u8;
     [red, green, blue, alpha]
+}
+
+fn color_picker_popup(ui: &mut Ui, current_color: &mut Color32) {
+    let colors = [
+        ("Red", Color32::from_rgb(255, 0, 0)),
+        ("Green", Color32::from_rgb(0, 255, 0)),
+        ("Blue", Color32::from_rgb(0, 0, 255)),
+        ("Yellow", Color32::from_rgb(255, 255, 0)),
+        ("Black", Color32::from_rgb(0, 0, 0)),
+        ("White", Color32::from_rgb(255, 255, 255)),
+    ];
+
+    ui.label("Pick a color:");
+    for (name, color) in colors.iter() {
+        if ui
+            .selectable_label(*current_color == *color, *name)
+            .clicked()
+        {
+            *current_color = *color;
+            ui.close_menu(); // Close the popup when a color is selected
+        }
+    }
+}
+
+fn modal_color_picker(ctx: &egui::Context, current_color: &mut egui::Color32) {
+    // Unique ID for the popup
+    let popup_id = egui::Id::new("color_picker_popup");
+
+    egui::CentralPanel::default().show(ctx, |ui| {
+        if ui
+            .button(format!("Select Color (Currently: {:?})", "red"))
+            .clicked()
+        {}
+
+        egui::popup::show_tooltip(ctx, ui.layer_id(), popup_id, |ui| {
+            ui.set_min_width(150.0);
+            color_picker_popup(ui, current_color);
+        });
+
+        // Show the currently selected color
+        ui.horizontal(|ui| {
+            ui.label("Selected Color:");
+            ui.colored_label(*current_color, format!("{:?}", current_color));
+        });
+    });
 }
