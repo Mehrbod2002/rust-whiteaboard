@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-futures = "0.3"
 pollster = "0.3"
 bytemuck = { version = "1.19.0", features = ["derive"] }
 glyphon = { git = "https://github.com/mehrbod2002/glyphon", branch="egui-wgpu", features=["egui"] }
@@ -12,6 +11,7 @@ winit = "0.30.5"
 egui = "0.29.1"
 egui-wgpu = "0.29.1"
 egui-winit = "0.29.1"
+resvg = "0.44.0"
 
 [profile.dev]
 opt-level=0

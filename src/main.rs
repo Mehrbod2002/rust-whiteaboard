@@ -1,6 +1,9 @@
 #![allow(dead_code, unused_imports)]
 mod ui;
-use egui::{Color32, Ui, Vec2};
+use egui::{
+    color_picker, include_image, Color32, ColorImage, Context, Id, Image, ImageButton, ImageSource,
+    Response, TextureHandle, TextureId, Ui, Vec2,
+};
 use egui_wgpu::{
     wgpu::{
         util::DeviceExt, vertex_attr_array, CommandEncoderDescriptor, CompositeAlphaMode,
@@ -16,6 +19,7 @@ use glyphon::{
     cosmic_text::ttf_parser::name::Name, Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics,
     Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
+use resvg::{tiny_skia::Pixmap, usvg};
 use std::{
     borrow::{Borrow, BorrowMut},
     collections::HashSet,
@@ -32,6 +36,9 @@ use winit::{
     keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr},
     window::Window,
 };
+
+const PREV_ICON: &[u8; 928] = include_bytes!("assets/prev.svg");
+const SQUARE_ICON: &[u8; 928] = include_bytes!("assets/prev.svg");
 
 fn main() {
     let event_loop = EventLoop::new().unwrap();
@@ -179,6 +186,11 @@ struct WindowState {
     last_click_position: Option<PhysicalPosition<f64>>,
     editing_text_index: Option<usize>,
     selection_vertex_buffer: Option<egui_wgpu::wgpu::Buffer>,
+
+    font_button: Option<Response>,
+    color_picker_button: Option<Response>,
+    sqaure_button: Option<Response>,
+    prev_button: Option<Response>,
 }
 
 impl WindowState {
@@ -285,6 +297,13 @@ impl WindowState {
                 }
                 if *button == MouseButton::Left {
                     if *state == ElementState::Pressed {
+                        if let Some(prev) = &self.prev_button {
+                            println!(
+                                "{:?} {:?}",
+                                prev.contains_pointer(),
+                                self.last_cursor_position
+                            );
+                        }
                         self.mouse_pressed = true;
                         self.current_stroke = Vec::new();
 
@@ -647,6 +666,10 @@ impl WindowState {
             rectangle_shader: Some(rectangle_shader),
             shape_positions: Vec::new(),
             egui_renderer,
+            prev_button: None,
+            font_button: None,
+            color_picker_button: None,
+            sqaure_button: None,
         };
 
         let _ = Self::render(&mut render_self);
@@ -659,6 +682,8 @@ impl WindowState {
             self.surface_config.width = self.size.width;
             self.surface_config.height = self.size.height;
             self.surface.configure(&self.device, &self.surface_config);
+
+            let _ = self.render();
         }
     }
 
@@ -935,7 +960,7 @@ impl WindowState {
             self.egui_renderer.begin_pass(&self.window);
 
             let header_height = self.surface_config.height as f32 * 0.2;
-            let header_width = self.surface_config.width as f32;
+            let header_width = (self.surface_config.width as f64 * self.scale_factor) as f32;
 
             let menu_color = egui::Color32::from_hex("#5C5C5C").expect("unable to get color");
             egui::Area::new("Header".into())
@@ -947,17 +972,38 @@ impl WindowState {
                         .fill(menu_color)
                         .stroke(egui::Stroke::new(1.0, menu_color));
                     custom_frame.show(ui, |ui| {
+                        ui.set_min_width(header_width);
                         ui.vertical(|ui| {
                             ui.add_space(5.0);
                             ui.horizontal(|ui| {
-                                ui.set_width(ui.available_width());
+                                ui.set_width(header_width);
 
-                                ui.add_space(ui.available_width() * 0.18);
-                                for _ in 0..5 {
-                                    if ui.button("Settings").clicked() {
-                                        println!("Settings clicked");
-                                    }
-                                }
+                                ui.add_space(header_width * 0.18);
+                                let prev =
+                                    ImageButton::new(Image::new(include_image!("assets/prev.png")))
+                                        .tint(menu_color);
+                                self.prev_button = Some(ui.add(prev));
+
+                                ui.add_space(header_width * 0.03);
+
+                                let sqaure =
+                                    ImageButton::new(Image::new(include_image!("assets/prev.png")))
+                                        .tint(menu_color);
+                                self.sqaure_button = Some(ui.add(sqaure));
+
+                                ui.add_space(header_width * 0.03);
+
+                                let font =
+                                    ImageButton::new(Image::new(include_image!("assets/prev.png")))
+                                        .tint(menu_color);
+                                self.font_button = Some(ui.add(font));
+
+                                ui.add_space(header_width * 0.03);
+
+                                let color_picker =
+                                    ImageButton::new(Image::new(include_image!("assets/prev.png")))
+                                        .tint(menu_color);
+                                self.color_picker_button = Some(ui.add(color_picker));
                             });
 
                             ui.add_space(5.0);
@@ -1065,7 +1111,9 @@ impl ApplicationHandler for Application {
         if !state.input(window.clone(), &event) {
             match event {
                 WindowEvent::CloseRequested => event_loop.exit(),
-                WindowEvent::Resized(size) => state.resize(size),
+                WindowEvent::Resized(size) => {
+                    state.resize(size);
+                }
                 _ => {}
             }
         }
@@ -1134,30 +1182,27 @@ fn color_picker_popup(ui: &mut Ui, current_color: &mut Color32) {
             .clicked()
         {
             *current_color = *color;
-            ui.close_menu(); // Close the popup when a color is selected
+            ui.close_menu();
         }
     }
 }
 
-fn modal_color_picker(ctx: &egui::Context, current_color: &mut egui::Color32) {
-    // Unique ID for the popup
-    let popup_id = egui::Id::new("color_picker_popup");
+fn load_svg_to_texture<'a>(ctx: &'a Context, svg_data: &'a [u8]) -> ImageButton<'a> {
+    let tree = usvg::Tree::from_data(svg_data, &usvg::Options::default()).unwrap();
 
-    egui::CentralPanel::default().show(ctx, |ui| {
-        if ui
-            .button(format!("Select Color (Currently: {:?})", "red"))
-            .clicked()
-        {}
+    let image = ColorImage::new(
+        [tree.size().width() as usize, tree.size().height() as usize],
+        egui::Color32::WHITE,
+    );
+    let mut pixmap =
+        Pixmap::new(tree.size().width() as u32, tree.size().height() as u32).expect("unable");
+    resvg::render(
+        &tree,
+        resvg::usvg::Transform::identity(),
+        &mut pixmap.as_mut(),
+    );
 
-        egui::popup::show_tooltip(ctx, ui.layer_id(), popup_id, |ui| {
-            ui.set_min_width(150.0);
-            color_picker_popup(ui, current_color);
-        });
+    let texture = ctx.load_texture("svg_texture", image, Default::default());
 
-        // Show the currently selected color
-        ui.horizontal(|ui| {
-            ui.label("Selected Color:");
-            ui.colored_label(*current_color, format!("{:?}", current_color));
-        });
-    });
+    egui::ImageButton::new(&texture)
 }
