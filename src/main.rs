@@ -356,26 +356,22 @@ impl WindowState {
                                             let editing_text = self.texts
                                                 [self.editing_text_index.unwrap()]
                                             .borrow_mut();
-                                            if editing_text.pending {
-                                                if editing_text.text.chars().count() > 1 {
-                                                    editing_text.text = editing_text
-                                                        .text
-                                                        .chars()
-                                                        .take(editing_text.text.chars().count() - 2)
-                                                        .collect();
-                                                    window.request_redraw();
-                                                }
+                                            if editing_text.pending && editing_text.text.chars().count() > 1 {
+                                                editing_text.text = editing_text
+                                                    .text
+                                                    .chars()
+                                                    .take(editing_text.text.chars().count() - 2)
+                                                    .collect();
+                                                window.request_redraw();
                                             }
                                         } else if let Some(text) = self.texts.last_mut() {
-                                            if text.pending {
-                                                if text.text.chars().count() > 1 {
-                                                    text.text = text
-                                                        .text
-                                                        .chars()
-                                                        .take(text.text.chars().count() - 2)
-                                                        .collect();
-                                                    window.request_redraw();
-                                                }
+                                            if text.pending && text.text.chars().count() > 1 {
+                                                text.text = text
+                                                    .text
+                                                    .chars()
+                                                    .take(text.text.chars().count() - 2)
+                                                    .collect();
+                                                window.request_redraw();
                                             }
                                         }
                                     }
@@ -659,7 +655,7 @@ impl WindowState {
     }
 
     fn update(&mut self) -> Result<(), egui_wgpu::wgpu::SurfaceError> {
-        let mut buffers: Vec<glyphon::Buffer> = Vec::new();
+        let buffers: Vec<glyphon::Buffer> = Vec::new();
         let mut text_areas: Vec<TextArea> = Vec::new();
         let mut all_vertices = Vec::new();
 
@@ -924,14 +920,10 @@ impl WindowState {
                 size_in_pixels: [self.surface_config.width, self.surface_config.height],
                 pixels_per_point: (self.window.as_ref().scale_factor() * self.scale_factor) as f32,
             };
-            let screen_descriptor = ScreenDescriptor {
-                size_in_pixels: [self.surface_config.width, self.surface_config.height],
-                pixels_per_point: (self.window.as_ref().scale_factor() * self.scale_factor) as f32,
-            };
 
             self.egui_renderer.begin_pass(&self.window);
 
-            let header_height = (self.surface_config.height as f32 * 0.1) as f32;
+            let header_height = self.surface_config.height as f32 * 0.1;
             let header_width = self.surface_config.width as f32;
 
             egui::Area::new("Header".into())
