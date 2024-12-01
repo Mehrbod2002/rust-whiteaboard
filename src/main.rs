@@ -198,6 +198,11 @@ struct WindowState {
     last_click_position: Option<PhysicalPosition<f64>>,
     editing_text_index: Option<usize>,
     selection_vertex_buffer: Option<egui_wgpu::wgpu::Buffer>,
+
+    color: ImageSource<'static>,
+    rect: ImageSource<'static>,
+    prev: ImageSource<'static>,
+    font: ImageSource<'static>,
 }
 
 impl WindowState {
@@ -661,6 +666,11 @@ impl WindowState {
             egui_renderer,
             show_modal_fonts: false,
             show_modal_colors: false,
+
+            color: include_image!("assets/color.png"),
+            font: include_image!("assets/font.png"),
+            rect: include_image!("assets/rect.png"),
+            prev: include_image!("assets/prev.png"),
         };
 
         let _ = Self::render(&mut render_self);
@@ -1045,10 +1055,8 @@ impl WindowState {
                         ui.horizontal(|ui| {
                             ui.set_width(header_width);
 
-                            ui.add_space(header_width * 0.18);
-                            let prev =
-                                ImageButton::new(Image::new(include_image!("assets/prev.png")))
-                                    .frame(false);
+                            ui.add_space(header_width * 0.17);
+                            let prev = ImageButton::new(Image::new(self.prev.clone())).frame(false);
                             let prev_button = ui.add(prev);
                             if prev_button.clicked() {
                                 if let Some(action) = self.actions.pop() {
@@ -1069,17 +1077,14 @@ impl WindowState {
                             ui.add_space(header_width * 0.03);
 
                             let sqaure =
-                                ImageButton::new(Image::new(include_image!("assets/prev.png")))
-                                    .frame(false);
+                                ImageButton::new(Image::new(self.rect.clone())).frame(false);
                             let sqaure_button = ui.add(sqaure);
                             if sqaure_button.clicked() {
                                 self.create_rect = true;
                             }
                             ui.add_space(header_width * 0.03);
 
-                            let font =
-                                ImageButton::new(Image::new(include_image!("assets/prev.png")))
-                                    .frame(false);
+                            let font = ImageButton::new(Image::new(self.font.clone())).frame(false);
                             let font_button = ui.add(font);
                             if font_button.clicked() {
                                 self.show_modal_fonts = true;
@@ -1089,8 +1094,7 @@ impl WindowState {
                             ui.add_space(header_width * 0.03);
 
                             let color_picker =
-                                ImageButton::new(Image::new(include_image!("assets/prev.png")))
-                                    .frame(false);
+                                ImageButton::new(Image::new(self.color.clone())).frame(false);
                             let color_picker_button = ui.add(color_picker);
                             if color_picker_button.clicked() {
                                 self.show_modal_colors = true;
