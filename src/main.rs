@@ -1,8 +1,8 @@
 #![allow(dead_code, unused_imports)]
 mod ui;
 use egui::{
-    color_picker, include_image, Align2, Color32, ColorImage, Context, Id, Image, ImageButton,
-    ImageSource, Pos2, Response, TextureHandle, TextureId, Ui, Vec2,
+    color_picker, include_image, Align2, Color32, ColorImage, Context, Frame, Id, Image,
+    ImageButton, ImageSource, Pos2, Response, TextureHandle, TextureId, Ui, Vec2,
 };
 use egui_wgpu::{
     wgpu::{
@@ -19,6 +19,7 @@ use glyphon::{
     cosmic_text::ttf_parser::name::Name, Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics,
     Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
+use lazy_static::lazy_static;
 use resvg::{tiny_skia::Pixmap, usvg};
 use std::{
     borrow::{Borrow, BorrowMut},
@@ -45,6 +46,17 @@ fn main() {
     event_loop
         .run_app(&mut Application { window_state: None })
         .unwrap();
+}
+
+lazy_static! {
+    static ref RED: egui::Color32 = egui::Color32::from_rgba_unmultiplied(255, 0, 0, 255);
+    static ref GREEN: egui::Color32 = egui::Color32::from_rgba_unmultiplied(0, 255, 0, 255);
+    static ref BLUE: egui::Color32 = egui::Color32::from_rgba_unmultiplied(0, 0, 255, 255);
+    static ref YELLOW: egui::Color32 = egui::Color32::from_rgba_unmultiplied(255, 255, 0, 255);
+    static ref MAGENTA: egui::Color32 = egui::Color32::from_rgba_unmultiplied(255, 0, 255, 255);
+    static ref CYAN: egui::Color32 = egui::Color32::from_rgba_unmultiplied(0, 255, 255, 255);
+    static ref BLACK: egui::Color32 = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 255);
+    static ref WHITE: egui::Color32 = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 255);
 }
 
 #[repr(C)]
@@ -968,28 +980,65 @@ impl WindowState {
         let menu_color = egui::Color32::from_hex("#5C5C5C").expect("unable to get color");
 
         let sized = vec![10, 12, 14, 16, 18, 20, 24, 28, 32];
-        let mut modal_fonts = self.show_modal_fonts;
-        egui::Window::new("")
-            .collapsible(false)
-            .title_bar(true)
-            .open(&mut modal_fonts)
-            .resizable(false)
-            .fixed_pos(Pos2 { x: 0.0, y: 10.0 })
-            .movable(false)
-            .min_height(header_height * 2.0)
-            .anchor(Align2::CENTER_TOP, [0.0, 0.0])
-            .show(self.egui_renderer.context(), |ui| {
-                ui.horizontal(|ui| {
-                    for size in sized {
-                        if ui.button(format!("{} px", size)).clicked() {
-                            self.font_size = size;
-                            self.window.request_redraw();
-                        }
-                    }
-                });
-            });
 
-        self.show_modal_fonts = modal_fonts;
+        if self.show_modal_colors {
+            egui::Window::new("Color Palette")
+                .collapsible(false)
+                .title_bar(false)
+                .movable(false)
+                .resizable(false)
+                // .fixed_pos(egui::Pos2 { x: 0.0, y: 10.0 })
+                .anchor(Align2::CENTER_TOP, [0.0, 0.0])
+                .show(self.egui_renderer.context(), |ui| {
+                    ui.vertical(|ui| {
+                        let colors = [
+                            egui::Color32::from_rgb(255, 0, 0),     // Red
+                            egui::Color32::from_rgb(0, 255, 0),     // Green
+                            egui::Color32::from_rgb(0, 0, 255),     // Blue
+                            egui::Color32::from_rgb(255, 255, 0),   // Yellow
+                            egui::Color32::from_rgb(255, 0, 255),   // Magenta
+                            egui::Color32::from_rgb(0, 255, 255),   // Cyan
+                            egui::Color32::from_rgb(0, 0, 0),       // Black
+                            egui::Color32::from_rgb(255, 255, 255), // White
+                        ];
+
+                        ui.horizontal_wrapped(|ui| {
+                            for &color in &colors {
+                                let size = egui::Vec2::splat(30.0);
+                                if ui
+                                    .add(egui::Button::new("").fill(color).min_size(size))
+                                    .clicked()
+                                {
+                                    self.current_color = convert_to_buffer(color);
+                                    self.show_modal_colors = false;
+                                }
+                            }
+                        });
+                    });
+                });
+        }
+
+        if self.show_modal_fonts {
+            egui::Window::new("fonts")
+                .collapsible(false)
+                .title_bar(false)
+                .resizable(false)
+                // .fixed_pos(Pos2 { x: 0.0, y: 10.0 })
+                .movable(false)
+                .min_height(header_height * 2.0)
+                .anchor(Align2::CENTER_TOP, [0.0, 0.0])
+                .show(self.egui_renderer.context(), |ui| {
+                    ui.horizontal(|ui| {
+                        for size in sized {
+                            if ui.button(format!("{} px", size)).clicked() {
+                                self.font_size = size;
+                                self.show_modal_fonts = false;
+                                self.window.request_redraw();
+                            }
+                        }
+                    });
+                });
+        }
 
         egui::Area::new("Header".into())
             .fixed_pos([0.0, 0.0])
@@ -1043,11 +1092,8 @@ impl WindowState {
                                     .tint(menu_color);
                             let font_button = ui.add(font);
                             if font_button.clicked() {
-                                if self.show_modal_fonts {
-                                    self.show_modal_fonts = false
-                                } else {
-                                    self.show_modal_fonts = true
-                                };
+                                self.show_modal_fonts = true;
+                                self.window.request_redraw();
                             }
 
                             ui.add_space(header_width * 0.03);
@@ -1056,6 +1102,13 @@ impl WindowState {
                                 ImageButton::new(Image::new(include_image!("assets/prev.png")))
                                     .tint(menu_color);
                             let color_picker_button = ui.add(color_picker);
+                            if color_picker_button.clicked() {
+                                self.show_modal_colors = true;
+                                self.egui_renderer
+                                    .context()
+                                    .memory_mut(|mem| mem.reset_areas());
+                                self.window.request_redraw();
+                            }
                         });
 
                         ui.add_space(5.0);
@@ -1146,7 +1199,7 @@ impl ApplicationHandler for Application {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        // event_loop.set_control_flow(ControlFlow::Poll);
+        event_loop.set_control_flow(ControlFlow::Poll);
         let Some(state) = &mut self.window_state else {
             return;
         };
@@ -1204,34 +1257,25 @@ impl ApplicationHandler for Application {
     }
 }
 
+fn convert_to_buffer(color: Color32) -> [f32; 4] {
+    [
+        color.r().into(),
+        color.g().into(),
+        color.b().into(),
+        color.a().into(),
+    ]
+}
+
+fn convert_to_color32(color: [u8; 4]) -> Color32 {
+    Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3])
+}
+
 fn normalized_to_rgba(normalized: [f32; 4]) -> [u8; 4] {
     let red = (normalized[0] * 255.0) as u8;
     let green = (normalized[1] * 255.0) as u8;
     let blue = (normalized[2] * 255.0) as u8;
     let alpha = (normalized[3] * 255.0) as u8;
     [red, green, blue, alpha]
-}
-
-fn color_picker_popup(ui: &mut Ui, current_color: &mut Color32) {
-    let colors = [
-        ("Red", Color32::from_rgb(255, 0, 0)),
-        ("Green", Color32::from_rgb(0, 255, 0)),
-        ("Blue", Color32::from_rgb(0, 0, 255)),
-        ("Yellow", Color32::from_rgb(255, 255, 0)),
-        ("Black", Color32::from_rgb(0, 0, 0)),
-        ("White", Color32::from_rgb(255, 255, 255)),
-    ];
-
-    ui.label("Pick a color:");
-    for (name, color) in colors.iter() {
-        if ui
-            .selectable_label(*current_color == *color, *name)
-            .clicked()
-        {
-            *current_color = *color;
-            ui.close_menu();
-        }
-    }
 }
 
 fn load_svg_to_texture<'a>(ctx: &'a Context, svg_data: &'a [u8]) -> ImageButton<'a> {
