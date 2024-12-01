@@ -38,9 +38,6 @@ use winit::{
     window::Window,
 };
 
-const PREV_ICON: &[u8; 928] = include_bytes!("assets/prev.svg");
-const SQUARE_ICON: &[u8; 928] = include_bytes!("assets/prev.svg");
-
 fn main() {
     let event_loop = EventLoop::new().unwrap();
     event_loop
@@ -131,11 +128,13 @@ struct TextEntries {
     text: String,
     pending: bool,
     bounds: Rect,
+    font_size: i32,
 }
 
 impl TextEntries {
-    fn null(color: [u8; 4]) -> Self {
+    fn null(color: [u8; 4], font_size: i32) -> Self {
         TextEntries {
+            font_size,
             position: [0.0, 0.0],
             color,
             text: String::new(),
@@ -179,7 +178,6 @@ struct WindowState {
     texts: Vec<TextEntries>,
     atlas: glyphon::TextAtlas,
     text_renderer: glyphon::TextRenderer,
-    text_buffer: glyphon::Buffer,
     window: Arc<Window>,
 
     mouse_pressed: bool,
@@ -294,8 +292,10 @@ impl WindowState {
                         }
                     } else {
                         self.start_typing = true;
-                        self.texts
-                            .push(TextEntries::null(normalized_to_rgba(self.current_color)));
+                        self.texts.push(TextEntries::null(
+                            normalized_to_rgba(self.current_color),
+                            self.font_size,
+                        ));
                         let position = self.last_cursor_position;
                         let x = position.x as f32;
                         let y = position.y as f32;
@@ -420,41 +420,26 @@ impl WindowState {
                                     _ => {}
                                 }
                             }
-                        } else {
-                            if self.pressed_keys.contains(&Key::Named(NamedKey::Control))
-                                && self
-                                    .pressed_keys
-                                    .contains(&Key::Character("z".to_string().into()))
-                            {
-                                if let Some(action) = self.actions.pop() {
-                                    match action {
-                                        Action::Stroke(_) => {
-                                            self.strokes.pop();
-                                        }
-                                        Action::Text(_) => {
-                                            self.texts.pop();
-                                        }
-                                        Action::Shapes(_) => {
-                                            self.shapes.pop();
-                                        }
+                        } else if self.pressed_keys.contains(&Key::Named(NamedKey::Control))
+                            && self
+                                .pressed_keys
+                                .contains(&Key::Character("z".to_string().into()))
+                        {
+                            if let Some(action) = self.actions.pop() {
+                                match action {
+                                    Action::Stroke(_) => {
+                                        self.strokes.pop();
+                                    }
+                                    Action::Text(_) => {
+                                        self.texts.pop();
+                                    }
+                                    Action::Shapes(_) => {
+                                        self.shapes.pop();
                                     }
                                 }
-                                window.request_redraw();
-                                return true;
                             }
-                            if let Some(ref text) = event.text {
-                                match text.as_str() {
-                                    "1" => self.current_color = [1.0, 0.0, 0.0, 1.0], // Red
-                                    "2" => self.current_color = [0.0, 1.0, 0.0, 1.0], // Green
-                                    "3" => self.current_color = [0.0, 0.0, 1.0, 1.0], // Blue
-                                    "4" => self.current_color = [1.0, 1.0, 0.0, 1.0], // Yellow
-                                    "5" => self.current_color = [1.0, 0.0, 1.0, 1.0], // Magenta
-                                    "6" => self.current_color = [0.0, 1.0, 1.0, 1.0], // Cyan
-                                    "7" => self.current_color = [0.0, 0.0, 0.0, 1.0], // Black
-                                    "8" => self.current_color = [1.0, 1.0, 1.0, 1.0], // White
-                                    _ => (),
-                                }
-                            }
+                            window.request_redraw();
+                            return true;
                         }
                     }
                     ElementState::Released => {
@@ -516,26 +501,16 @@ impl WindowState {
             desired_maximum_frame_latency: 2,
         };
         let egui_renderer = EguiRenderer::new(&device, surface_config.format, None, 1, &window);
+        egui_extras::install_image_loaders(egui_renderer.context());
         surface.configure(&device, &surface_config);
 
-        let mut font_system = FontSystem::new();
+        let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let cache = Cache::new(&device);
         let viewport = Viewport::new(&device, &cache);
         let mut atlas = TextAtlas::new(&device, &queue, &cache, swapchain_format);
         let text_renderer =
             TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
-        let mut text_buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 42.0));
-
-        let physical_width = (physical_size.width as f64 * scale_factor) as f32;
-        let physical_height = (physical_size.height as f64 * scale_factor) as f32;
-
-        text_buffer.set_size(
-            &mut font_system,
-            Some(physical_width),
-            Some(physical_height),
-        );
-        text_buffer.shape_until_scroll(&mut font_system, false);
 
         let shader = device.create_shader_module(egui_wgpu::wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
@@ -664,7 +639,6 @@ impl WindowState {
             viewport,
             atlas,
             text_renderer,
-            text_buffer,
             texts: Vec::new(),
             create_rect: false,
             window,
@@ -712,6 +686,9 @@ impl WindowState {
         let buffers: Vec<glyphon::Buffer> = Vec::new();
         let mut text_areas: Vec<TextArea> = Vec::new();
         let mut all_vertices = Vec::new();
+
+        let physical_width = (self.size.width as f64 * self.scale_factor) as f32;
+        let physical_height = (self.size.height as f64 * self.scale_factor) as f32;
 
         self.actions.iter().for_each(|x| {
             if let Action::Stroke(stroke) = x {
@@ -828,7 +805,20 @@ impl WindowState {
         let mut buffers: Vec<glyphon::Buffer> = Vec::new();
 
         for text_entry in self.texts.iter() {
-            let mut buffer = self.text_buffer.clone();
+            let mut text_buffer = Buffer::new(
+                &mut self.font_system,
+                Metrics::new(
+                    text_entry.font_size as f32,
+                    text_entry.font_size as f32 * 0.1,
+                ),
+            );
+            text_buffer.set_size(
+                &mut self.font_system,
+                Some(physical_width),
+                Some(physical_height),
+            );
+            text_buffer.shape_until_scroll(&mut self.font_system, false);
+            let mut buffer = text_buffer.clone();
             let mut text = text_entry.text.clone();
             if text_entry.pending && self.cursor_visible {
                 text.push('|');
@@ -1058,7 +1048,7 @@ impl WindowState {
                             ui.add_space(header_width * 0.18);
                             let prev =
                                 ImageButton::new(Image::new(include_image!("assets/prev.png")))
-                                    .tint(menu_color);
+                                    .frame(false);
                             let prev_button = ui.add(prev);
                             if prev_button.clicked() {
                                 if let Some(action) = self.actions.pop() {
@@ -1080,7 +1070,7 @@ impl WindowState {
 
                             let sqaure =
                                 ImageButton::new(Image::new(include_image!("assets/prev.png")))
-                                    .tint(menu_color);
+                                    .frame(false);
                             let sqaure_button = ui.add(sqaure);
                             if sqaure_button.clicked() {
                                 self.create_rect = true;
@@ -1089,7 +1079,7 @@ impl WindowState {
 
                             let font =
                                 ImageButton::new(Image::new(include_image!("assets/prev.png")))
-                                    .tint(menu_color);
+                                    .frame(false);
                             let font_button = ui.add(font);
                             if font_button.clicked() {
                                 self.show_modal_fonts = true;
@@ -1100,7 +1090,7 @@ impl WindowState {
 
                             let color_picker =
                                 ImageButton::new(Image::new(include_image!("assets/prev.png")))
-                                    .tint(menu_color);
+                                    .frame(false);
                             let color_picker_button = ui.add(color_picker);
                             if color_picker_button.clicked() {
                                 self.show_modal_colors = true;
@@ -1276,24 +1266,4 @@ fn normalized_to_rgba(normalized: [f32; 4]) -> [u8; 4] {
     let blue = (normalized[2] * 255.0) as u8;
     let alpha = (normalized[3] * 255.0) as u8;
     [red, green, blue, alpha]
-}
-
-fn load_svg_to_texture<'a>(ctx: &'a Context, svg_data: &'a [u8]) -> ImageButton<'a> {
-    let tree = usvg::Tree::from_data(svg_data, &usvg::Options::default()).unwrap();
-
-    let image = ColorImage::new(
-        [tree.size().width() as usize, tree.size().height() as usize],
-        egui::Color32::WHITE,
-    );
-    let mut pixmap =
-        Pixmap::new(tree.size().width() as u32, tree.size().height() as u32).expect("unable");
-    resvg::render(
-        &tree,
-        resvg::usvg::Transform::identity(),
-        &mut pixmap.as_mut(),
-    );
-
-    let texture = ctx.load_texture("svg_texture", image, Default::default());
-
-    egui::ImageButton::new(&texture)
 }

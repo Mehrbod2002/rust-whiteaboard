@@ -12,8 +12,12 @@ pub struct EguiRenderer {
 }
 
 impl EguiRenderer {
-    pub fn context(&self) -> &Context {
+    pub fn context(&self) -> &egui::Context {
         self.state.egui_ctx()
+    }
+
+    pub fn get_state(&self) -> &State {
+        &self.state
     }
 
     pub fn new(
