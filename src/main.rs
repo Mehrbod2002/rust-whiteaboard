@@ -1,30 +1,23 @@
-#![allow(dead_code, unused_imports)]
 mod ui;
 use egui::{
-    color_picker, include_image, Align2, Color32, ColorImage, Context, Frame, Id, Image,
-    ImageButton, ImageSource, Pos2, Response, TextureHandle, TextureId, Ui, Vec2,
+    include_image, Align2, Color32, Image,
+    ImageButton, ImageSource,
 };
 use egui_wgpu::{
     wgpu::{
-        util::DeviceExt, vertex_attr_array, CommandEncoderDescriptor, CompositeAlphaMode,
-        DeviceDescriptor, FragmentState, Instance, InstanceDescriptor, LoadOp, MultisampleState,
-        Operations, PipelineCompilationOptions, PresentMode, PrimitiveState,
-        RenderPassColorAttachment, RenderPassDescriptor, RequestAdapterOptions,
-        ShaderModuleDescriptor, StoreOp, SurfaceConfiguration, TextureFormat, TextureUsages,
-        TextureViewDescriptor, VertexBufferLayout, VertexState,
+        util::DeviceExt, vertex_attr_array, CompositeAlphaMode,
+        DeviceDescriptor, FragmentState, Instance, InstanceDescriptor, MultisampleState, PipelineCompilationOptions, PresentMode, PrimitiveState, RequestAdapterOptions,
+        ShaderModuleDescriptor, SurfaceConfiguration, TextureFormat, TextureUsages, VertexBufferLayout,
     },
     ScreenDescriptor,
 };
 use glyphon::{
-    cosmic_text::ttf_parser::name::Name, Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics,
+    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics,
     Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
-use lazy_static::lazy_static;
-use resvg::{tiny_skia::Pixmap, usvg};
 use std::{
-    borrow::{Borrow, BorrowMut},
+    borrow::BorrowMut,
     collections::HashSet,
-    fmt::{self, Error},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -34,7 +27,7 @@ use winit::{
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{ElementState, MouseButton, WindowEvent},
     event_loop::{self, ControlFlow, EventLoop},
-    keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr},
+    keyboard::{Key, NamedKey, SmolStr},
     window::Window,
 };
 
@@ -43,17 +36,6 @@ fn main() {
     event_loop
         .run_app(&mut Application { window_state: None })
         .unwrap();
-}
-
-lazy_static! {
-    static ref RED: egui::Color32 = egui::Color32::from_rgba_unmultiplied(255, 0, 0, 255);
-    static ref GREEN: egui::Color32 = egui::Color32::from_rgba_unmultiplied(0, 255, 0, 255);
-    static ref BLUE: egui::Color32 = egui::Color32::from_rgba_unmultiplied(0, 0, 255, 255);
-    static ref YELLOW: egui::Color32 = egui::Color32::from_rgba_unmultiplied(255, 255, 0, 255);
-    static ref MAGENTA: egui::Color32 = egui::Color32::from_rgba_unmultiplied(255, 0, 255, 255);
-    static ref CYAN: egui::Color32 = egui::Color32::from_rgba_unmultiplied(0, 255, 255, 255);
-    static ref BLACK: egui::Color32 = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 255);
-    static ref WHITE: egui::Color32 = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 255);
 }
 
 #[repr(C)]
@@ -167,7 +149,6 @@ struct WindowState {
     surface_config: SurfaceConfiguration,
     last_cursor_position: PhysicalPosition<f64>,
     actions: Vec<Action>,
-    modifiers: ModifiersState,
     scale_factor: f64,
     egui_renderer: EguiRenderer,
     size: PhysicalSize<u32>,
@@ -197,7 +178,6 @@ struct WindowState {
     last_click_time: Option<Instant>,
     last_click_position: Option<PhysicalPosition<f64>>,
     editing_text_index: Option<usize>,
-    selection_vertex_buffer: Option<egui_wgpu::wgpu::Buffer>,
 
     color: ImageSource<'static>,
     rect: ImageSource<'static>,
@@ -635,7 +615,6 @@ impl WindowState {
             scale_factor,
             surface,
             actions: Vec::new(),
-            modifiers: ModifiersState::default(),
             pressed_keys: HashSet::new(),
             surface_config,
             font_system,
@@ -660,7 +639,6 @@ impl WindowState {
             last_click_time: None,
             last_click_position: None,
             editing_text_index: None,
-            selection_vertex_buffer: None,
             rectangle_shader: Some(rectangle_shader),
             shape_positions: Vec::new(),
             egui_renderer,
@@ -675,10 +653,6 @@ impl WindowState {
 
         let _ = Self::render(&mut render_self);
         render_self
-    }
-
-    fn set_font_modal(&mut self) {
-        self.show_modal_fonts = false;
     }
 
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -1258,10 +1232,6 @@ fn convert_to_buffer(color: Color32) -> [f32; 4] {
         color.b().into(),
         color.a().into(),
     ]
-}
-
-fn convert_to_color32(color: [u8; 4]) -> Color32 {
-    Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3])
 }
 
 fn normalized_to_rgba(normalized: [f32; 4]) -> [u8; 4] {
