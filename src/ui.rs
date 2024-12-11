@@ -1,7 +1,6 @@
 use egui::Context;
 use egui_wgpu::wgpu::{CommandEncoder, Device, Queue, StoreOp, TextureFormat, TextureView};
 use egui_wgpu::{wgpu, Renderer, ScreenDescriptor};
-
 use egui_winit::State;
 use winit::event::WindowEvent;
 use winit::window::Window;
@@ -30,7 +29,7 @@ impl EguiRenderer {
     ) -> EguiRenderer {
         let egui_context = Context::default();
 
-        let egui_state = winit::State::new(
+        let egui_state = egui_winit::State::new(
             egui_context,
             egui::viewport::ViewportId::ROOT,
             &window,

@@ -7,10 +7,10 @@ edition = "2021"
 pollster = "0.3"
 bytemuck = { version = "1.19.0", features = ["derive"] }
 glyphon = { git = "https://github.com/mehrbod2002/glyphon", branch="egui-wgpu", features=["egui"] }
-winit = { git = "https://github.com/mehrbod2002/winit", branch = "winitm"}
-egui = { version = "0.29.1", workspace = true }
+winit = "0.30.5"
+egui = "0.29.1"
 egui-wgpu = "0.29.1"
-egui-winit = { path = "egui-winit" }
+egui-winit = "0.29.1"
 lazy_static = "1.5.0"
 egui_extras = { version = "0.29.1", features = ["all_loaders"] }
 image = { version = "0.25.5", features = ["png", "jpeg"] }
@@ -19,37 +19,6 @@ image = { version = "0.25.5", features = ["png", "jpeg"] }
 opt-level=0
 lto=false
 
-[workspace.package]
-edition = "2021"
-license = "Apache.2"
-rust-version = "1.80.0"
-version = "0.1.0"
-
-[workspace.dependencies]
-egui = "0.29.1"
-document-features = "0.2.10"
-ahash = { version = "0.8.11", default-features = false, features = [
-    "no-rng", # we don't need DOS-protection, so we let users opt-in to it instead
-    "std",
-] }
-log = { version = "0.4", features = ["std"] }
-puffin = "0.19.1"
-raw-window-handle = "0.6.1"
-serde = { version = "1", features = ["derive"] }
-web-time = "1.1.0"
-winit = { git = "https://github.com/mehrbod2002/winit", branch = "winitm" }
-
-[workspace]
-members = [
-    "egui-winit"
-]
-
 [profile.release]
 opt-level=0
 lto=false
-
-[patch.crates-io]
-winit = { git = "https://github.com/mehrbod2002/winit", branch = "winitm" }
-
-[workspace.lints.rust]
-unsafe_code = "deny"

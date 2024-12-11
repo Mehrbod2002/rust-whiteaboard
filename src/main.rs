@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod ui;
 use egui::{include_image, Align2, Color32, Image, ImageButton, ImageSource};
 use egui_wgpu::{
@@ -26,14 +28,13 @@ use winit::{
     event::{ElementState, MouseButton, WindowEvent},
     event_loop::{self, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey, SmolStr},
-    platform::x11::WindowAttributesExtX11,
     window::Window,
 };
 
 fn main() {
     let event_loop = EventLoop::new().unwrap();
     event_loop
-        .run_with_gtk(&mut Application { window_state: None })
+        .run_app(&mut Application { window_state: None })
         .unwrap();
 }
 
@@ -187,11 +188,9 @@ struct WindowState {
 impl WindowState {
     fn input(&mut self, window: Arc<Window>, event: &WindowEvent) -> bool {
         match event {
-            WindowEvent::PointerMoved {
+            WindowEvent::CursorMoved {
                 device_id: _,
                 position,
-                primary: _,
-                source: _,
             } => {
                 self.last_cursor_position = *position;
 
@@ -224,15 +223,12 @@ impl WindowState {
                 }
                 true
             }
-            WindowEvent::PointerButton {
+            WindowEvent::MouseInput {
                 device_id: _,
-                position: _,
-                primary: _,
                 state,
                 button,
             } => {
-                let button = button.mouse_button();
-                if button == MouseButton::Right && *state == ElementState::Pressed {
+                if *button == MouseButton::Right && *state == ElementState::Pressed {
                     let now = Instant::now();
                     let position = self.last_cursor_position;
 
@@ -293,7 +289,7 @@ impl WindowState {
                         }
                     }
                 }
-                if button == MouseButton::Left {
+                if *button == MouseButton::Left {
                     if *state == ElementState::Pressed {
                         self.mouse_pressed = true;
                         self.current_stroke = Vec::new();
@@ -458,7 +454,7 @@ impl WindowState {
     }
 
     async fn new(window: Arc<Window>) -> Self {
-        let physical_size = window.outer_size();
+        let physical_size = window.inner_size();
         let scale_factor = window.scale_factor();
 
         let instance = Instance::new(InstanceDescriptor::default());
@@ -1180,7 +1176,7 @@ impl ApplicationHandler for Application {
         if !state.input(window.clone(), &event) {
             match event {
                 WindowEvent::CloseRequested => event_loop.exit(),
-                WindowEvent::SurfaceResized(size) => {
+                WindowEvent::Resized(size) => {
                     state.resize(size);
                 }
                 _ => {}
@@ -1226,10 +1222,6 @@ impl ApplicationHandler for Application {
             }
             _ => (),
         }
-    }
-
-    fn can_create_surfaces(&mut self, _event_loop: &event_loop::ActiveEventLoop) {
-        println!("called");
     }
 }
 
