@@ -1,15 +1,16 @@
 #![allow(dead_code)]
 
-mod ui;
-use egui::{include_image, Align2, Color32, Image, ImageButton, ImageSource};
+use egui::{
+    include_image, Align2, Color32, Context, Event as EventEgui, Image, ImageButton, ImageSource, Key as KeyEgui, RawInput
+};
 use egui_wgpu::{
     wgpu::{
-        util::DeviceExt, vertex_attr_array, CompositeAlphaMode, DeviceDescriptor, FragmentState,
-        Instance, InstanceDescriptor, MultisampleState, PipelineCompilationOptions, PresentMode,
-        PrimitiveState, RequestAdapterOptions, ShaderModuleDescriptor, SurfaceConfiguration,
-        TextureFormat, TextureUsages, VertexBufferLayout,
+        self, util::DeviceExt, vertex_attr_array, CompositeAlphaMode, DeviceDescriptor,
+        FragmentState, Instance, InstanceDescriptor, MultisampleState, PipelineCompilationOptions,
+        PresentMode, PrimitiveState, RequestAdapterOptions, ShaderModuleDescriptor, StoreOp,
+        SurfaceConfiguration, TextureFormat, TextureUsages, VertexBufferLayout,
     },
-    ScreenDescriptor,
+    Renderer, ScreenDescriptor,
 };
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
@@ -21,21 +22,74 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use ui::EguiRenderer;
-use winit::{
-    application::ApplicationHandler,
-    dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
+use tao::{
+    dpi::{PhysicalPosition, PhysicalSize},
+    event::Event,
     event::{ElementState, MouseButton, WindowEvent},
-    event_loop::{self, ControlFlow, EventLoop},
-    keyboard::{Key, NamedKey, SmolStr},
-    window::Window,
+    event_loop::{ControlFlow, EventLoop},
+    keyboard::Key,
+    window::{Window, WindowId},
 };
 
 fn main() {
-    let event_loop = EventLoop::new().unwrap();
-    event_loop
-        .run_app(&mut Application { window_state: None })
-        .unwrap();
+    let event_loop = EventLoop::new();
+
+    let window = Window::new(&event_loop).unwrap_or_else(|err| {
+        eprintln!("Error occurred: {:?}", err);
+        panic!("Error occurred");
+    });
+    let window = Arc::new(window);
+
+    let mut app = Application {
+        window_state: Some(pollster::block_on(WindowState::new(window))),
+    };
+
+    event_loop.run(move |event, _, control_flow| {
+        let Some(state) = &mut app.window_state else {
+            return;
+        };
+        match event {
+            Event::WindowEvent {
+                window_id, event, ..
+            } => {
+                app.window_event(window_id, event);
+            }
+            // Event::Resumed => {
+            //     if app.window_state.is_some() {
+            //         return;
+            //     }
+
+            //     let window = Window::new(&event_loop).unwrap_or_else(|err| {
+            //         eprintln!("error occurs {:?}", err);
+            //         panic!("error occures");
+            //     });
+
+            //     let window = Arc::new(window);
+            //     app.window_state = Some(pollster::block_on(WindowState::new(window)));
+            // }
+            Event::MainEventsCleared => *control_flow = ControlFlow::Exit,
+            Event::RedrawRequested(_window_id) => {
+                state.viewport.update(
+                    &state.queue,
+                    Resolution {
+                        width: state.surface_config.width,
+                        height: (state.surface_config.height as f32 * 0.8) as u32,
+                    },
+                );
+                let _ = state.update();
+                match state.render() {
+                    Ok(_) => {}
+                    Err(egui_wgpu::wgpu::SurfaceError::Lost) => state.resize(state.size),
+                    Err(egui_wgpu::wgpu::SurfaceError::OutOfMemory) => {
+                        *control_flow = ControlFlow::Exit
+                    }
+                    Err(e) => eprintln!("{:?}", e),
+                }
+            }
+            Event::LoopDestroyed => *control_flow = ControlFlow::Exit,
+            _ => (),
+        }
+    });
 }
 
 #[repr(C)]
@@ -138,9 +192,9 @@ enum Action {
     Shapes(Rectangle),
 }
 
-struct WindowState {
+struct WindowState<'a> {
     device: egui_wgpu::wgpu::Device,
-    pressed_keys: HashSet<Key>,
+    pressed_keys: HashSet<Key<'a>>,
     queue: egui_wgpu::wgpu::Queue,
     show_modal_fonts: bool,
     font_size: i32,
@@ -150,7 +204,9 @@ struct WindowState {
     last_cursor_position: PhysicalPosition<f64>,
     actions: Vec<Action>,
     scale_factor: f64,
-    egui_renderer: EguiRenderer,
+    egui_renderer: Renderer,
+    raw_input: RawInput,
+    egui_context: Context,
     size: PhysicalSize<u32>,
 
     font_system: FontSystem,
@@ -185,13 +241,50 @@ struct WindowState {
     font: ImageSource<'static>,
 }
 
-impl WindowState {
+impl<'a> WindowState<'a> {
     fn input(&mut self, window: Arc<Window>, event: &WindowEvent) -> bool {
         match event {
+            WindowEvent::Focused(focused) => {
+                self.raw_input.events.push(egui::Event::WindowFocused(*focused));
+                const CURSOR_BLINK_INTERVAL: f32 = 0.5;
+
+                if self.start_typing
+                    && self.cursor_timer.elapsed().as_secs_f32() >= CURSOR_BLINK_INTERVAL
+                {
+                    self.cursor_visible = !self.cursor_visible;
+                    self.cursor_timer = Instant::now();
+                    self.window.request_redraw();
+                }
+                true
+            }
+            WindowEvent::ModifiersChanged(_) => {
+                if let tao::event::WindowEvent::ModifiersChanged(modifiers_state) = event {
+                    self.raw_input.modifiers = egui::Modifiers {
+                        alt: modifiers_state.alt_key(),
+                        ctrl: modifiers_state.control_key(),
+                        shift: modifiers_state.shift_key(),
+                        mac_cmd: cfg!(target_os = "macos") && modifiers_state.super_key(),
+                        command: if cfg!(target_os = "macos") {
+                            modifiers_state.super_key()
+                        } else {
+                            modifiers_state.control_key()
+                        },
+                    };
+                }
+                true
+            }
             WindowEvent::CursorMoved {
                 device_id: _,
                 position,
+                ..
             } => {
+                if let tao::event::WindowEvent::CursorMoved { position, .. } = event {
+                    self.raw_input.events.push(egui::Event::PointerMoved(egui::pos2(
+                        position.x as f32,
+                        position.y as f32,
+                    )));
+                }
+                
                 self.last_cursor_position = *position;
 
                 if self.mouse_pressed {
@@ -227,7 +320,24 @@ impl WindowState {
                 device_id: _,
                 state,
                 button,
+                ..
             } => {
+                if let tao::event::WindowEvent::MouseInput { state, button, .. } = event {
+                    let pressed = *state == tao::event::ElementState::Pressed;
+                    let button = match button {
+                        MouseButton::Left => egui::PointerButton::Primary,
+                        MouseButton::Right => egui::PointerButton::Secondary,
+                        MouseButton::Middle => egui::PointerButton::Middle,
+                        _ => egui::PointerButton::Middle,
+                    };
+                    self.raw_input.events.push(egui::Event::PointerButton {
+                        pos: egui::pos2(0.0, 0.0),
+                        button,
+                        pressed,
+                        modifiers: self.raw_input.modifiers,
+                    });
+                }
+                
                 if *button == MouseButton::Right && *state == ElementState::Pressed {
                     let now = Instant::now();
                     let position = self.last_cursor_position;
@@ -294,10 +404,7 @@ impl WindowState {
                         self.mouse_pressed = true;
                         self.current_stroke = Vec::new();
 
-                        if self
-                            .pressed_keys
-                            .contains(&Key::Character(SmolStr::new("s")))
-                        {
+                        if self.pressed_keys.contains(&Key::Character("s")) {
                             self.create_rect = true;
                         }
                     } else {
@@ -331,6 +438,13 @@ impl WindowState {
                 true
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                self.raw_input.events.push(EventEgui::Key {
+                    key: KeyEgui::from_name(event.logical_key.to_text().unwrap_or("")).unwrap(),
+                    physical_key: KeyEgui::from_name(&event.physical_key.to_string()),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: self.raw_input.modifiers,
+                });
                 match event.state {
                     ElementState::Pressed => {
                         self.pressed_keys.insert(event.logical_key.clone());
@@ -344,71 +458,66 @@ impl WindowState {
                                     }
                                 }
                             }
-                            if let Key::Named(key) = event.logical_key {
-                                match key {
-                                    NamedKey::Enter => {
-                                        self.start_typing = false;
-                                        self.editing_text_index = None;
-                                        if let Some(text) = self.texts.last_mut() {
-                                            text.pending = false;
-                                            self.actions.push(Action::Text(text.clone()));
-                                        }
+                            match event.logical_key {
+                                Key::Enter => {
+                                    self.start_typing = false;
+                                    self.editing_text_index = None;
+                                    if let Some(text) = self.texts.last_mut() {
+                                        text.pending = false;
+                                        self.actions.push(Action::Text(text.clone()));
+                                    }
+                                    window.request_redraw();
+                                }
+                                Key::Delete => {
+                                    let text_entry = if let Some(index) = self.editing_text_index {
+                                        self.texts.get_mut(index)
+                                    } else {
+                                        self.texts.last_mut()
+                                    };
+                                    if let Some(entry) = text_entry {
+                                        entry.text.pop();
                                         window.request_redraw();
                                     }
-                                    NamedKey::Delete => {
-                                        let text_entry =
-                                            if let Some(index) = self.editing_text_index {
-                                                self.texts.get_mut(index)
-                                            } else {
-                                                self.texts.last_mut()
-                                            };
-                                        if let Some(entry) = text_entry {
-                                            entry.text.pop();
+                                }
+                                Key::GoBack => {
+                                    self.start_typing = false;
+                                    self.editing_text_index = None;
+                                    if let Some(text) = self.texts.last_mut() {
+                                        text.pending = false;
+                                        self.actions.push(Action::Text(text.clone()));
+                                    }
+                                    window.request_redraw();
+                                }
+                                Key::Backspace => {
+                                    if self.editing_text_index.is_some() {
+                                        let editing_text = self.texts
+                                            [self.editing_text_index.unwrap()]
+                                        .borrow_mut();
+                                        if editing_text.pending
+                                            && editing_text.text.chars().count() > 1
+                                        {
+                                            editing_text.text = editing_text
+                                                .text
+                                                .chars()
+                                                .take(editing_text.text.chars().count() - 2)
+                                                .collect();
+                                            window.request_redraw();
+                                        }
+                                    } else if let Some(text) = self.texts.last_mut() {
+                                        if text.pending && text.text.chars().count() > 1 {
+                                            text.text = text
+                                                .text
+                                                .chars()
+                                                .take(text.text.chars().count() - 2)
+                                                .collect();
                                             window.request_redraw();
                                         }
                                     }
-                                    NamedKey::GoBack => {
-                                        self.start_typing = false;
-                                        self.editing_text_index = None;
-                                        if let Some(text) = self.texts.last_mut() {
-                                            text.pending = false;
-                                            self.actions.push(Action::Text(text.clone()));
-                                        }
-                                        window.request_redraw();
-                                    }
-                                    NamedKey::Backspace => {
-                                        if self.editing_text_index.is_some() {
-                                            let editing_text = self.texts
-                                                [self.editing_text_index.unwrap()]
-                                            .borrow_mut();
-                                            if editing_text.pending
-                                                && editing_text.text.chars().count() > 1
-                                            {
-                                                editing_text.text = editing_text
-                                                    .text
-                                                    .chars()
-                                                    .take(editing_text.text.chars().count() - 2)
-                                                    .collect();
-                                                window.request_redraw();
-                                            }
-                                        } else if let Some(text) = self.texts.last_mut() {
-                                            if text.pending && text.text.chars().count() > 1 {
-                                                text.text = text
-                                                    .text
-                                                    .chars()
-                                                    .take(text.text.chars().count() - 2)
-                                                    .collect();
-                                                window.request_redraw();
-                                            }
-                                        }
-                                    }
-                                    _ => {}
                                 }
+                                _ => {}
                             }
-                        } else if self.pressed_keys.contains(&Key::Named(NamedKey::Control))
-                            && self
-                                .pressed_keys
-                                .contains(&Key::Character("z".to_string().into()))
+                        } else if self.pressed_keys.contains(&Key::Control)
+                            && self.pressed_keys.contains(&Key::Character("z"))
                         {
                             if let Some(action) = self.actions.pop() {
                                 match action {
@@ -446,6 +555,7 @@ impl WindowState {
 
                         self.shape_positions.clear();
                     }
+                    _ => (),
                 }
                 true
             }
@@ -485,8 +595,10 @@ impl WindowState {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        let egui_renderer = EguiRenderer::new(&device, surface_config.format, None, 1, &window);
-        egui_extras::install_image_loaders(egui_renderer.context());
+        let egui_ctx = egui::Context::default();
+        let egui_renderer = Renderer::new(&device, surface_config.format, None, 1, true);
+        let raw_input = RawInput::default();
+        egui_extras::install_image_loaders(&egui_ctx);
         surface.configure(&device, &surface_config);
 
         let font_system = FontSystem::new();
@@ -649,6 +761,8 @@ impl WindowState {
             font: include_image!("assets/font.png"),
             rect: include_image!("assets/rect.png"),
             prev: include_image!("assets/prev.png"),
+            raw_input,
+            egui_context: egui_ctx,
         };
 
         let _ = Self::render(&mut render_self);
@@ -946,8 +1060,7 @@ impl WindowState {
             ],
             pixels_per_point: (self.window.as_ref().scale_factor() * self.scale_factor) as f32,
         };
-        self.egui_renderer.begin_frame(&self.window);
-
+        self.egui_context.begin_pass(self.raw_input.clone());
         let header_height = self.surface_config.height as f32;
         let header_width = (self.surface_config.width as f64 * self.scale_factor) as f32;
 
@@ -963,7 +1076,7 @@ impl WindowState {
                 .resizable(false)
                 // .fixed_pos(egui::Pos2 { x: 0.0, y: 10.0 })
                 .anchor(Align2::CENTER_TOP, [0.0, 0.0])
-                .show(self.egui_renderer.context(), |ui| {
+                .show(&self.egui_context, |ui| {
                     ui.vertical(|ui| {
                         let colors = [
                             egui::Color32::from_rgb(255, 0, 0),     // Red
@@ -1001,7 +1114,7 @@ impl WindowState {
                 .movable(false)
                 .min_height(header_height * 2.0)
                 .anchor(Align2::CENTER_TOP, [0.0, 0.0])
-                .show(self.egui_renderer.context(), |ui| {
+                .show(&self.egui_context, |ui| {
                     ui.horizontal(|ui| {
                         for size in sized {
                             if ui.button(format!("{} px", size)).clicked() {
@@ -1018,7 +1131,7 @@ impl WindowState {
             .fixed_pos([0.0, 0.0])
             .movable(false)
             .default_size([header_width, header_height * 10.0])
-            .show(self.egui_renderer.context(), |ui| {
+            .show(&self.egui_context, |ui| {
                 let custom_frame = egui::Frame::none()
                     .fill(menu_color)
                     .stroke(egui::Stroke::new(1.0, menu_color));
@@ -1072,9 +1185,7 @@ impl WindowState {
                             let color_picker_button = ui.add(color_picker);
                             if color_picker_button.clicked() {
                                 self.show_modal_colors = true;
-                                self.egui_renderer
-                                    .context()
-                                    .memory_mut(|mem| mem.reset_areas());
+                                self.egui_context.memory_mut(|mem| mem.reset_areas());
                                 self.window.request_redraw();
                             }
                         });
@@ -1084,14 +1195,47 @@ impl WindowState {
                 });
             });
 
-        self.egui_renderer.end_frame_and_draw(
+        let full_output = self.egui_context.end_pass();
+
+        let tris = self
+            .egui_context
+            .tessellate(full_output.shapes, full_output.pixels_per_point);
+
+        for (id, image_delta) in &full_output.textures_delta.set {
+            self.egui_renderer
+                .update_texture(&self.device, &self.queue, *id, image_delta);
+        }
+
+        self.egui_renderer.update_buffers(
             &self.device,
             &self.queue,
             &mut encoder,
-            &self.window,
-            &view,
-            screen_descriptor,
+            &tris,
+            &screen_descriptor,
         );
+
+        let rpass = encoder.begin_render_pass(&egui_wgpu::wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                ops: egui_wgpu::wgpu::Operations {
+                    load: egui_wgpu::wgpu::LoadOp::Load,
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            label: Some("egui main render pass"),
+            occlusion_query_set: None,
+        });
+
+        self.egui_renderer
+            .render(&mut rpass.forget_lifetime(), &tris, &screen_descriptor);
+        for x in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(x);
+        }
+
+        self.raw_input.events.clear();
 
         {
             let mut render_pass =
@@ -1124,15 +1268,15 @@ impl WindowState {
     }
 }
 
-struct Application {
-    window_state: Option<WindowState>,
+struct Application<'a> {
+    window_state: Option<WindowState<'a>>,
 }
 
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
 const DOUBLE_CLICK_DISTANCE: f64 = 5.0;
 
-impl ApplicationHandler for Application {
-    fn about_to_wait(&mut self, _: &event_loop::ActiveEventLoop) {
+impl<'a> Application<'a> {
+    fn about_to_wait(&mut self) {
         let Some(state) = &mut self.window_state else {
             return;
         };
@@ -1147,27 +1291,7 @@ impl ApplicationHandler for Application {
         }
     }
 
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        if self.window_state.is_some() {
-            return;
-        }
-
-        let (width, height) = (800, 600);
-        let window_attributes = Window::default_attributes()
-            .with_inner_size(LogicalSize::new(width as f64, height as f64))
-            .with_title("glyphon hello world");
-        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-
-        self.window_state = Some(pollster::block_on(WindowState::new(window)));
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-        _window_id: winit::window::WindowId,
-        event: WindowEvent,
-    ) {
-        event_loop.set_control_flow(ControlFlow::Poll);
+    fn window_event(&mut self, _window_id: WindowId, event: WindowEvent) {
         let Some(state) = &mut self.window_state else {
             return;
         };
@@ -1175,52 +1299,11 @@ impl ApplicationHandler for Application {
         let window = &state.window;
         if !state.input(window.clone(), &event) {
             match event {
-                WindowEvent::CloseRequested => event_loop.exit(),
                 WindowEvent::Resized(size) => {
                     state.resize(size);
                 }
                 _ => {}
             }
-        }
-        if state
-            .egui_renderer
-            .handle_input(state.window.as_ref(), &event)
-        {
-            return;
-        }
-        match event {
-            WindowEvent::RedrawRequested => {
-                state.viewport.update(
-                    &state.queue,
-                    Resolution {
-                        width: state.surface_config.width,
-                        height: (state.surface_config.height as f32 * 0.8) as u32,
-                    },
-                );
-                let _ = state.update();
-                match state.render() {
-                    Ok(_) => {}
-                    Err(egui_wgpu::wgpu::SurfaceError::Lost) => state.resize(state.size),
-                    Err(egui_wgpu::wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                    Err(e) => eprintln!("{:?}", e),
-                }
-            }
-            WindowEvent::Focused(_) => {
-                let Some(state) = &mut self.window_state else {
-                    return;
-                };
-
-                const CURSOR_BLINK_INTERVAL: f32 = 0.5;
-
-                if state.start_typing
-                    && state.cursor_timer.elapsed().as_secs_f32() >= CURSOR_BLINK_INTERVAL
-                {
-                    state.cursor_visible = !state.cursor_visible;
-                    state.cursor_timer = Instant::now();
-                    state.window.request_redraw();
-                }
-            }
-            _ => (),
         }
     }
 }
