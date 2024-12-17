@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use egui::{
-    include_image, Align2, Color32, Context, Event as EventEgui, Image, ImageButton, ImageSource, Key as KeyEgui, RawInput
+    include_image, Align2, Color32, Context, Event as EventEgui, Image, ImageButton, ImageSource,
+    Key as KeyEgui, RawInput,
 };
 use egui_wgpu::{
     wgpu::{
@@ -35,9 +36,10 @@ fn main() {
     let event_loop = EventLoop::new();
 
     let window = Window::new(&event_loop).unwrap_or_else(|err| {
-        eprintln!("Error occurred: {:?}", err);
-        panic!("Error occurred");
+        panic!("Error occurred: {:?}", err);
     });
+
+    window.set_title("وایت برد");
     let window = Arc::new(window);
 
     let mut app = Application {
@@ -51,9 +53,12 @@ fn main() {
         match event {
             Event::WindowEvent {
                 window_id, event, ..
-            } => {
-                app.window_event(window_id, event);
-            }
+            } => match event {
+                WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                _ => {
+                    app.window_event(window_id, event);
+                }
+            },
             // Event::Resumed => {
             //     if app.window_state.is_some() {
             //         return;
@@ -67,13 +72,13 @@ fn main() {
             //     let window = Arc::new(window);
             //     app.window_state = Some(pollster::block_on(WindowState::new(window)));
             // }
-            Event::MainEventsCleared => *control_flow = ControlFlow::Exit,
+            // Event::MainEventsCleared => *control_flow = ControlFlow::Exit,
             Event::RedrawRequested(_window_id) => {
                 state.viewport.update(
                     &state.queue,
                     Resolution {
-                        width: state.surface_config.width,
-                        height: (state.surface_config.height as f32 * 0.8) as u32,
+                        width: state.size.width,
+                        height: state.size.height,
                     },
                 );
                 let _ = state.update();
@@ -245,7 +250,9 @@ impl<'a> WindowState<'a> {
     fn input(&mut self, window: Arc<Window>, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::Focused(focused) => {
-                self.raw_input.events.push(egui::Event::WindowFocused(*focused));
+                self.raw_input
+                    .events
+                    .push(egui::Event::WindowFocused(*focused));
                 const CURSOR_BLINK_INTERVAL: f32 = 0.5;
 
                 if self.start_typing
@@ -257,20 +264,18 @@ impl<'a> WindowState<'a> {
                 }
                 true
             }
-            WindowEvent::ModifiersChanged(_) => {
-                if let tao::event::WindowEvent::ModifiersChanged(modifiers_state) = event {
-                    self.raw_input.modifiers = egui::Modifiers {
-                        alt: modifiers_state.alt_key(),
-                        ctrl: modifiers_state.control_key(),
-                        shift: modifiers_state.shift_key(),
-                        mac_cmd: cfg!(target_os = "macos") && modifiers_state.super_key(),
-                        command: if cfg!(target_os = "macos") {
-                            modifiers_state.super_key()
-                        } else {
-                            modifiers_state.control_key()
-                        },
-                    };
-                }
+            WindowEvent::ModifiersChanged(modifiers_state) => {
+                self.raw_input.modifiers = egui::Modifiers {
+                    alt: modifiers_state.alt_key(),
+                    ctrl: modifiers_state.control_key(),
+                    shift: modifiers_state.shift_key(),
+                    mac_cmd: cfg!(target_os = "macos") && modifiers_state.super_key(),
+                    command: if cfg!(target_os = "macos") {
+                        modifiers_state.super_key()
+                    } else {
+                        modifiers_state.control_key()
+                    },
+                };
                 true
             }
             WindowEvent::CursorMoved {
@@ -278,14 +283,16 @@ impl<'a> WindowState<'a> {
                 position,
                 ..
             } => {
-                if let tao::event::WindowEvent::CursorMoved { position, .. } = event {
-                    self.raw_input.events.push(egui::Event::PointerMoved(egui::pos2(
-                        position.x as f32,
-                        position.y as f32,
-                    )));
-                }
-                
                 self.last_cursor_position = *position;
+
+                if let tao::event::WindowEvent::CursorMoved { position, .. } = event {
+                    self.raw_input
+                        .events
+                        .push(egui::Event::PointerMoved(egui::pos2(
+                            position.x as f32,
+                            position.y as f32,
+                        )));
+                }
 
                 if self.mouse_pressed {
                     let x = position.x as f32 / self.size.width as f32 * 2.0 - 1.0;
@@ -322,22 +329,25 @@ impl<'a> WindowState<'a> {
                 button,
                 ..
             } => {
-                if let tao::event::WindowEvent::MouseInput { state, button, .. } = event {
-                    let pressed = *state == tao::event::ElementState::Pressed;
-                    let button = match button {
-                        MouseButton::Left => egui::PointerButton::Primary,
-                        MouseButton::Right => egui::PointerButton::Secondary,
-                        MouseButton::Middle => egui::PointerButton::Middle,
-                        _ => egui::PointerButton::Middle,
-                    };
-                    self.raw_input.events.push(egui::Event::PointerButton {
-                        pos: egui::pos2(0.0, 0.0),
-                        button,
-                        pressed,
-                        modifiers: self.raw_input.modifiers,
-                    });
-                }
-                
+                let pressed = *state == tao::event::ElementState::Pressed;
+
+                let button_egui = match button {
+                    MouseButton::Left => egui::PointerButton::Primary,
+                    MouseButton::Right => egui::PointerButton::Secondary,
+                    MouseButton::Middle => egui::PointerButton::Middle,
+                    _ => return false,
+                };
+
+                self.raw_input.events.push(egui::Event::PointerButton {
+                    pos: egui::pos2(
+                        self.last_cursor_position.x as f32,
+                        self.last_cursor_position.y as f32,
+                    ),
+                    button: button_egui,
+                    pressed,
+                    modifiers: self.raw_input.modifiers,
+                });
+
                 if *button == MouseButton::Right && *state == ElementState::Pressed {
                     let now = Instant::now();
                     let position = self.last_cursor_position;
@@ -438,22 +448,24 @@ impl<'a> WindowState<'a> {
                 true
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                self.raw_input.events.push(EventEgui::Key {
-                    key: KeyEgui::from_name(event.logical_key.to_text().unwrap_or("")).unwrap(),
-                    physical_key: KeyEgui::from_name(&event.physical_key.to_string()),
-                    pressed: true,
-                    repeat: false,
-                    modifiers: self.raw_input.modifiers,
-                });
+                if let Some(key) = egui_key(event.logical_key.clone()) {
+                    self.raw_input.events.push(EventEgui::Key {
+                        key,
+                        physical_key: KeyEgui::from_name(&event.physical_key.to_string()),
+                        pressed: true,
+                        repeat: false,
+                        modifiers: self.raw_input.modifiers,
+                    });
+                }
                 match event.state {
                     ElementState::Pressed => {
                         self.pressed_keys.insert(event.logical_key.clone());
 
                         if self.start_typing || self.editing_text_index.is_some() {
-                            if let Some(text_input) = &event.text {
+                            if let Key::Character(char) = &event.logical_key {
                                 if let Some(text) = self.texts.last_mut() {
                                     if text.pending {
-                                        text.text.push_str(text_input);
+                                        text.text.push_str(char);
                                         window.request_redraw();
                                     }
                                 }
@@ -494,21 +506,21 @@ impl<'a> WindowState<'a> {
                                             [self.editing_text_index.unwrap()]
                                         .borrow_mut();
                                         if editing_text.pending
-                                            && editing_text.text.chars().count() > 1
+                                            && editing_text.text.chars().count() > 0
                                         {
                                             editing_text.text = editing_text
                                                 .text
                                                 .chars()
-                                                .take(editing_text.text.chars().count() - 2)
+                                                .take(editing_text.text.chars().count() - 1)
                                                 .collect();
                                             window.request_redraw();
                                         }
                                     } else if let Some(text) = self.texts.last_mut() {
-                                        if text.pending && text.text.chars().count() > 1 {
+                                        if text.pending && text.text.chars().count() > 0 {
                                             text.text = text
                                                 .text
                                                 .chars()
-                                                .take(text.text.chars().count() - 2)
+                                                .take(text.text.chars().count() - 1)
                                                 .collect();
                                             window.request_redraw();
                                         }
@@ -559,6 +571,15 @@ impl<'a> WindowState<'a> {
                 }
                 true
             }
+            WindowEvent::Resized(physical_size) => {
+                self.size = *physical_size;
+                self.resize(*physical_size);
+                self.raw_input.screen_rect = Some(egui::Rect {
+                    min: egui::pos2(0.0, 0.0),
+                    max: egui::pos2(physical_size.width as f32, physical_size.height as f32),
+                });
+                true
+            }
             _ => false,
         }
     }
@@ -601,7 +622,10 @@ impl<'a> WindowState<'a> {
         egui_extras::install_image_loaders(&egui_ctx);
         surface.configure(&device, &surface_config);
 
-        let font_system = FontSystem::new();
+        let mut font_system = FontSystem::new();
+        font_system
+            .db_mut()
+            .load_font_data(include_bytes!("assets/vazir.ttf").to_vec());
         let swash_cache = SwashCache::new();
         let cache = Cache::new(&device);
         let viewport = Viewport::new(&device, &cache);
@@ -781,15 +805,14 @@ impl<'a> WindowState<'a> {
     }
 
     fn update(&mut self) -> Result<(), egui_wgpu::wgpu::SurfaceError> {
-        let buffers: Vec<glyphon::Buffer> = Vec::new();
         let mut text_areas: Vec<TextArea> = Vec::new();
         let mut all_vertices = Vec::new();
 
         let physical_width = (self.size.width as f64 * self.scale_factor) as f32;
         let physical_height = (self.size.height as f64 * self.scale_factor) as f32;
 
-        self.actions.iter().for_each(|x| {
-            if let Action::Stroke(stroke) = x {
+        for action in &self.actions {
+            if let Action::Stroke(stroke) = action {
                 if stroke.len() >= 2 {
                     for i in 0..(stroke.len() - 1) {
                         all_vertices.push(stroke[i]);
@@ -797,91 +820,7 @@ impl<'a> WindowState<'a> {
                     }
                 }
             }
-        });
-
-        const CURSOR_BLINK_INTERVAL: f32 = 0.5;
-
-        if self.start_typing {
-            let elapsed = self.cursor_timer.elapsed().as_secs_f32();
-            if elapsed >= CURSOR_BLINK_INTERVAL {
-                self.cursor_visible = !self.cursor_visible;
-                self.cursor_timer = Instant::now();
-                self.window.request_redraw();
-            }
         }
-
-        for (index, (text_entry, buffer)) in self.texts.iter_mut().zip(buffers.iter()).enumerate() {
-            let x = text_entry.position[0];
-            let y = text_entry.position[1];
-
-            let mut min_x = f32::MAX;
-            let mut min_y = f32::MAX;
-            let mut max_x = f32::MIN;
-            let mut max_y = f32::MIN;
-
-            for layout_run in buffer.layout_runs() {
-                for glyph in layout_run.glyphs {
-                    let glyph_x = glyph.x;
-                    let glyph_y = glyph.y;
-                    let glyph_w = glyph.w;
-                    let glyph_h = glyph.x;
-
-                    min_x = min_x.min(glyph_x);
-                    min_y = min_y.min(glyph_y);
-                    max_x = max_x.max(glyph_x + glyph_w);
-                    max_y = max_y.max(glyph_y + glyph_h);
-                }
-            }
-
-            let width = max_x - min_x;
-            let height = max_y - min_y;
-
-            text_entry.bounds = Rect {
-                x,
-                y,
-                width,
-                height,
-            };
-
-            let text_bounds = TextBounds {
-                left: 0,
-                top: 0,
-                right: self.size.width as i32,
-                bottom: self.size.height as i32,
-            };
-
-            let normalized_color = normalized_to_rgba(self.current_color);
-            let default_color = if Some(index) == self.editing_text_index {
-                Color::rgb(0, 0, 255)
-            } else {
-                Color::rgba(
-                    normalized_color[0],
-                    normalized_color[1],
-                    normalized_color[2],
-                    normalized_color[3],
-                )
-            };
-
-            text_areas.push(TextArea {
-                buffer,
-                left: x,
-                top: y,
-                scale: 1.0,
-                bounds: text_bounds,
-                default_color,
-                custom_glyphs: &[],
-            });
-        }
-
-        let _ = self.text_renderer.prepare(
-            &self.device,
-            &self.queue,
-            &mut self.font_system,
-            &mut self.atlas,
-            &self.viewport,
-            text_areas,
-            &mut self.swash_cache,
-        );
 
         if self.current_stroke.len() >= 2 {
             for i in 0..(self.current_stroke.len() - 1) {
@@ -891,18 +830,26 @@ impl<'a> WindowState<'a> {
         }
 
         let vertex_data = bytemuck::cast_slice(&all_vertices);
-        self.vertex_buffer =
-            self.device
-                .create_buffer_init(&egui_wgpu::wgpu::util::BufferInitDescriptor {
-                    label: Some("Vertex Buffer"),
-                    contents: vertex_data,
-                    usage: egui_wgpu::wgpu::BufferUsages::VERTEX
-                        | egui_wgpu::wgpu::BufferUsages::COPY_DST,
-                });
+        self.vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: vertex_data,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            });
 
-        let mut buffers: Vec<glyphon::Buffer> = Vec::new();
+        const CURSOR_BLINK_INTERVAL: f32 = 0.5;
+        if self.start_typing {
+            let elapsed = self.cursor_timer.elapsed().as_secs_f32();
+            if elapsed >= CURSOR_BLINK_INTERVAL {
+                self.cursor_visible = !self.cursor_visible;
+                self.cursor_timer = Instant::now();
+                self.window.request_redraw();
+            }
+        }
 
-        for text_entry in self.texts.iter() {
+        let mut buffers = Vec::new();
+        for text_entry in &self.texts {
             let mut text_buffer = Buffer::new(
                 &mut self.font_system,
                 Metrics::new(
@@ -910,29 +857,29 @@ impl<'a> WindowState<'a> {
                     text_entry.font_size as f32 * 0.1,
                 ),
             );
+
             text_buffer.set_size(
                 &mut self.font_system,
                 Some(physical_width),
                 Some(physical_height),
             );
             text_buffer.shape_until_scroll(&mut self.font_system, false);
-            let mut buffer = text_buffer.clone();
+
             let mut text = text_entry.text.clone();
             if text_entry.pending && self.cursor_visible {
                 text.push('|');
             }
 
-            buffer.set_text(
+            let text = format!("\u{200E}\u{200C}{}", text);
+            text_buffer.set_text(
                 &mut self.font_system,
                 &text,
-                Attrs::new().family(Family::SansSerif),
+                Attrs::new().family(Family::Name("Vazir")),
                 Shaping::Advanced,
             );
-
-            buffers.push(buffer);
+            text_buffer.shape_until_scroll(&mut self.font_system, false);
+            buffers.push(text_buffer);
         }
-
-        let mut text_areas: Vec<TextArea> = Vec::new();
 
         for (text_entry, buffer) in self.texts.iter().zip(buffers.iter()) {
             let x = text_entry.position[0];
@@ -977,6 +924,7 @@ impl<'a> WindowState<'a> {
     }
 
     fn render(&mut self) -> Result<(), egui_wgpu::wgpu::SurfaceError> {
+        self.egui_context.begin_pass(self.raw_input.clone());
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -1054,13 +1002,9 @@ impl<'a> WindowState<'a> {
         }
 
         let screen_descriptor = ScreenDescriptor {
-            size_in_pixels: [
-                self.surface_config.width,
-                (self.surface_config.height as f32 * 0.2) as u32,
-            ],
-            pixels_per_point: (self.window.as_ref().scale_factor() * self.scale_factor) as f32,
+            size_in_pixels: [self.surface_config.width, self.surface_config.height],
+            pixels_per_point: self.egui_context.pixels_per_point(),
         };
-        self.egui_context.begin_pass(self.raw_input.clone());
         let header_height = self.surface_config.height as f32;
         let header_width = (self.surface_config.width as f64 * self.scale_factor) as f32;
 
@@ -1069,9 +1013,9 @@ impl<'a> WindowState<'a> {
         let sized = vec![10, 12, 14, 16, 18, 20, 24, 28, 32];
 
         if self.show_modal_colors {
-            egui::Window::new("Color Palette")
+            egui::Window::new("رنگ قلم")
                 .collapsible(false)
-                .title_bar(false)
+                .order(egui::Order::Foreground)
                 .movable(false)
                 .resizable(false)
                 // .fixed_pos(egui::Pos2 { x: 0.0, y: 10.0 })
@@ -1098,6 +1042,7 @@ impl<'a> WindowState<'a> {
                                 {
                                     self.current_color = convert_to_buffer(color);
                                     self.show_modal_colors = false;
+                                    self.egui_context.request_repaint();
                                 }
                             }
                         });
@@ -1106,9 +1051,9 @@ impl<'a> WindowState<'a> {
         }
 
         if self.show_modal_fonts {
-            egui::Window::new("fonts")
+            egui::Window::new("فونت")
                 .collapsible(false)
-                .title_bar(false)
+                .order(egui::Order::Foreground)
                 .resizable(false)
                 // .fixed_pos(Pos2 { x: 0.0, y: 10.0 })
                 .movable(false)
@@ -1130,6 +1075,7 @@ impl<'a> WindowState<'a> {
         egui::Area::new("Header".into())
             .fixed_pos([0.0, 0.0])
             .movable(false)
+            .order(egui::Order::Background)
             .default_size([header_width, header_height * 10.0])
             .show(&self.egui_context, |ui| {
                 let custom_frame = egui::Frame::none()
@@ -1138,11 +1084,11 @@ impl<'a> WindowState<'a> {
                 custom_frame.show(ui, |ui| {
                     ui.set_min_width(header_width);
                     ui.vertical(|ui| {
-                        ui.add_space(5.0);
+                        ui.add_space(10.0);
                         ui.horizontal(|ui| {
                             ui.set_width(header_width);
 
-                            ui.add_space(header_width * 0.17);
+                            ui.add_space(header_width * 0.4);
                             let prev = ImageButton::new(Image::new(self.prev.clone())).frame(false);
                             let prev_button = ui.add(prev);
                             if prev_button.clicked() {
@@ -1175,7 +1121,7 @@ impl<'a> WindowState<'a> {
                             let font_button = ui.add(font);
                             if font_button.clicked() {
                                 self.show_modal_fonts = true;
-                                self.window.request_redraw();
+                                self.egui_context.request_repaint();
                             }
 
                             ui.add_space(header_width * 0.03);
@@ -1185,12 +1131,11 @@ impl<'a> WindowState<'a> {
                             let color_picker_button = ui.add(color_picker);
                             if color_picker_button.clicked() {
                                 self.show_modal_colors = true;
-                                self.egui_context.memory_mut(|mem| mem.reset_areas());
-                                self.window.request_redraw();
+                                self.egui_context.request_repaint();
                             }
                         });
 
-                        ui.add_space(5.0);
+                        ui.add_space(10.0);
                     });
                 });
             });
@@ -1234,8 +1179,6 @@ impl<'a> WindowState<'a> {
         for x in &full_output.textures_delta.free {
             self.egui_renderer.free_texture(x);
         }
-
-        self.raw_input.events.clear();
 
         {
             let mut render_pass =
@@ -1297,14 +1240,7 @@ impl<'a> Application<'a> {
         };
 
         let window = &state.window;
-        if !state.input(window.clone(), &event) {
-            match event {
-                WindowEvent::Resized(size) => {
-                    state.resize(size);
-                }
-                _ => {}
-            }
-        }
+        state.input(window.clone(), &event);
     }
 }
 
@@ -1323,4 +1259,19 @@ fn normalized_to_rgba(normalized: [f32; 4]) -> [u8; 4] {
     let blue = (normalized[2] * 255.0) as u8;
     let alpha = (normalized[3] * 255.0) as u8;
     [red, green, blue, alpha]
+}
+
+fn egui_key(key: Key) -> Option<KeyEgui> {
+    match key {
+        Key::Character(char) => KeyEgui::from_name(char),
+        Key::Enter => Some(KeyEgui::Enter),
+        Key::Space => Some(KeyEgui::Space),
+        Key::Backspace => Some(KeyEgui::Backspace),
+        Key::Tab => Some(KeyEgui::Tab),
+        _ => None,
+    }
+}
+
+fn is_persian(char: char) -> bool {
+    ('\u{0600}'..='\u{06FF}').contains(&char) || ('\u{0750}'..='\u{077F}').contains(&char)
 }
