@@ -28,7 +28,6 @@ use tao::{
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::Key,
-    rwh_06::HasWindowHandle,
     window::{Window, WindowId},
 };
 
@@ -249,7 +248,7 @@ struct WindowState<'a> {
     font: ImageSource<'static>,
 }
 
-impl<'a> WindowState<'a> {
+impl WindowState<'_> {
     fn input(&mut self, window: Arc<Window>, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::Focused(focused) => {
@@ -1221,7 +1220,7 @@ struct Application<'a> {
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
 const DOUBLE_CLICK_DISTANCE: f64 = 5.0;
 
-impl<'a> Application<'a> {
+impl Application<'_> {
     fn about_to_wait(&mut self) {
         let Some(state) = &mut self.window_state else {
             return;
