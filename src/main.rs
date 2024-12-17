@@ -46,6 +46,7 @@ fn main() {
     };
 
     event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::Poll;
         let Some(state) = &mut app.window_state else {
             return;
         };
@@ -61,20 +62,16 @@ fn main() {
                     app.window_event(window_id, event);
                 }
             },
-            // Event::Resumed => {
-            //     if app.window_state.is_some() {
-            //         return;
-            //     }
+            Event::Resumed => {
+                state
+                    .surface
+                    .configure(&state.device, &state.surface_config);
 
-            //     let window = Window::new(&event_loop).unwrap_or_else(|err| {
-            //         eprintln!("error occurs {:?}", err);
-            //         panic!("error occures");
-            //     });
+                state.egui_renderer =
+                    Renderer::new(&state.device, state.surface_config.format, None, 1, true);
 
-            //     let window = Arc::new(window);
-            //     app.window_state = Some(pollster::block_on(WindowState::new(window)));
-            // }
-            // Event::MainEventsCleared => *control_flow = ControlFlow::Exit,
+                state.window.request_redraw();
+            }
             Event::RedrawRequested(_window_id) => {
                 state.viewport.update(
                     &state.queue,
@@ -1053,13 +1050,10 @@ impl WindowState<'_> {
         }
 
         if self.show_modal_fonts {
-            egui::Window::new("فونت")
+            egui::Window::new("")
                 .collapsible(false)
                 .order(egui::Order::Foreground)
                 .resizable(false)
-                // .fixed_pos(Pos2 { x: 0.0, y: 10.0 })
-                .movable(false)
-                .min_height(header_height * 2.0)
                 .anchor(Align2::CENTER_TOP, [0.0, 0.0])
                 .show(&self.egui_context, |ui| {
                     ui.horizontal(|ui| {
@@ -1124,6 +1118,7 @@ impl WindowState<'_> {
                             if font_button.clicked() {
                                 self.show_modal_fonts = true;
                                 self.egui_context.request_repaint();
+                                self.window.request_redraw();
                             }
 
                             ui.add_space(header_width * 0.03);
@@ -1134,6 +1129,7 @@ impl WindowState<'_> {
                             if color_picker_button.clicked() {
                                 self.show_modal_colors = true;
                                 self.egui_context.request_repaint();
+                                self.window.request_redraw();
                             }
                         });
 
@@ -1209,6 +1205,8 @@ impl WindowState<'_> {
 
         self.atlas.trim();
 
+        self.raw_input.events.clear();
+
         Ok(())
     }
 }
@@ -1232,6 +1230,10 @@ impl Application<'_> {
         {
             state.cursor_visible = !state.cursor_visible;
             state.cursor_timer = Instant::now();
+            state.window.request_redraw();
+        }
+
+        if state.show_modal_fonts || state.show_modal_colors {
             state.window.request_redraw();
         }
     }
