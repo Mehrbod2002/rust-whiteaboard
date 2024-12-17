@@ -25,10 +25,10 @@ use std::{
 };
 use tao::{
     dpi::{PhysicalPosition, PhysicalSize},
-    event::Event,
-    event::{ElementState, MouseButton, WindowEvent},
+    event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::Key,
+    rwh_06::HasWindowHandle,
     window::{Window, WindowId},
 };
 
@@ -51,6 +51,9 @@ fn main() {
             return;
         };
         match event {
+            Event::MainEventsCleared => {
+                app.about_to_wait();
+            }
             Event::WindowEvent {
                 window_id, event, ..
             } => match event {
