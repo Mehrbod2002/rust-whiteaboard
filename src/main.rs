@@ -4,15 +4,7 @@ use egui::{
     include_image, Align2, Color32, Context, Event as EventEgui, Image, ImageButton, ImageSource,
     Key as KeyEgui, RawInput,
 };
-use egui_wgpu::{
-    wgpu::{
-        self, util::DeviceExt, vertex_attr_array, CompositeAlphaMode, DeviceDescriptor,
-        FragmentState, Instance, InstanceDescriptor, MultisampleState, PipelineCompilationOptions,
-        PresentMode, PrimitiveState, RequestAdapterOptions, ShaderModuleDescriptor, StoreOp,
-        SurfaceConfiguration, TextureFormat, TextureUsages, VertexBufferLayout,
-    },
-    Renderer, ScreenDescriptor,
-};
+use egui_wgpu::{Renderer, ScreenDescriptor};
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
     TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -29,6 +21,12 @@ use tao::{
     event_loop::{ControlFlow, EventLoop},
     keyboard::Key,
     window::{Window, WindowId},
+};
+use wgpu::{
+    self, util::DeviceExt, vertex_attr_array, Backends, CompositeAlphaMode, DeviceDescriptor,
+    FragmentState, Instance, InstanceDescriptor, MultisampleState, PipelineCompilationOptions,
+    PresentMode, PrimitiveState, RequestAdapterOptions, ShaderModuleDescriptor, StoreOp,
+    SurfaceConfiguration, TextureFormat, TextureUsages, VertexBufferLayout,
 };
 
 fn main() {
@@ -587,7 +585,11 @@ impl WindowState<'_> {
         let physical_size = window.inner_size();
         let scale_factor = window.scale_factor();
 
-        let instance = Instance::new(InstanceDescriptor::default());
+        let instance = Instance::new(InstanceDescriptor {
+            backends: Backends::all(),
+            ..Default::default()
+        });
+
         let surface = instance
             .create_surface(window.clone())
             .expect("Create surface");
@@ -630,7 +632,7 @@ impl WindowState<'_> {
         let viewport = Viewport::new(&device, &cache);
         let mut atlas = TextAtlas::new(&device, &queue, &cache, swapchain_format);
         let text_renderer =
-            TextRenderer::new(&mut atlas, &device, MultisampleState::default(), None);
+            TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
 
         let shader = device.create_shader_module(egui_wgpu::wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
@@ -654,7 +656,7 @@ impl WindowState<'_> {
                 layout: Some(&pipeline_layout),
                 vertex: egui_wgpu::wgpu::VertexState {
                     module: &shader_shape,
-                    entry_point: "rectangle_vs",
+                    entry_point: Some("rectangle_vs"),
                     compilation_options: PipelineCompilationOptions::default(),
                     buffers: &[VertexBufferLayout {
                         array_stride: size_of::<Vertex>() as egui_wgpu::wgpu::BufferAddress,
@@ -683,7 +685,7 @@ impl WindowState<'_> {
                 multisample: MultisampleState::default(),
                 fragment: Some(FragmentState {
                     module: &shader_shape,
-                    entry_point: "fs_main",
+                    entry_point: Some("fs_main"),
                     compilation_options: PipelineCompilationOptions::default(),
                     targets: &[Some(egui_wgpu::wgpu::ColorTargetState {
                         format: surface_config.format,
@@ -701,7 +703,7 @@ impl WindowState<'_> {
                 layout: Some(&pipeline_layout),
                 vertex: egui_wgpu::wgpu::VertexState {
                     module: &shader,
-                    entry_point: "vs_main",
+                    entry_point: Some("vs_main"),
                     buffers: &[egui_wgpu::wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<Vertex>()
                             as egui_wgpu::wgpu::BufferAddress,
@@ -715,7 +717,7 @@ impl WindowState<'_> {
                 },
                 fragment: Some(egui_wgpu::wgpu::FragmentState {
                     module: &shader,
-                    entry_point: "fs_main",
+                    entry_point: Some("fs_main"),
                     targets: &[Some(egui_wgpu::wgpu::ColorTargetState {
                         format: surface_config.format,
                         blend: Some(egui_wgpu::wgpu::BlendState::ALPHA_BLENDING),
@@ -985,9 +987,11 @@ impl WindowState<'_> {
                             usage: egui_wgpu::wgpu::BufferUsages::VERTEX,
                         });
 
-                render_pass.set_pipeline(rectangle_shader);
-                render_pass.set_vertex_buffer(0, rectangle_vertex_buffer.slice(..));
-                render_pass.draw(0..flattened_shapes.len() as u32, 0..1);
+                if rectangle_vertex_buffer.size() != 0 {
+                    render_pass.set_pipeline(rectangle_shader);
+                    render_pass.set_vertex_buffer(0, rectangle_vertex_buffer.slice(..));
+                    render_pass.draw(0..flattened_shapes.len() as u32, 0..1);
+                }
             }
 
             if self.vertex_buffer.size() > 0 {
